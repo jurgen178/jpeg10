@@ -241,7 +241,7 @@ order of switches on the command line does not matter.
 ## Implementation
 
 All new code is in `transupp.c` (functions `do_exposure_comp` and
-`do_contrast`) and `transupp.h` (two new fields in `jpeg_transform_info`):
+`do_contrast`) and `transupp.h` (new fields in `jpeg_transform_info`):
 
 ```c
 boolean exposure_comp;    /* if TRUE, adjust exposure via DC shift */

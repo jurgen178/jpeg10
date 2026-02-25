@@ -604,6 +604,39 @@ to the source file.
 
 Other not-strictly-lossless transformation switches are:
 
+	-exposure-comp EV	Adjust brightness in an exposure-like manner using an EV
+				value.
+This is implemented as a DC-only brightness shift (only DC coefficients are
+modified; AC coefficients and thus local contrast/texture are preserved).
+EV is interpreted as a gain of 2^EV in linear-light.  Since only DC is
+modified, this is approximated as a constant DC-only shift computed from a
+log-average (geometric mean) reference level derived from the image's DC
+blocks.  The gain is applied in linear-light (assuming an sRGB transfer for
+sample values) and mapped back to an additive sample-domain offset.
+
+For YCbCr, BG_YCC and YCCK images the shift is applied to the luminance
+component only to avoid changing saturation or hue.
+For RGB and BG_RGB images encoded with a subtract-green transform, only the
+green (base) component is adjusted to avoid hue shifts.
+For all other color spaces the shift is applied to all components.
+For CMYK and YCCK images, the EV delta is computed in an inverted intensity
+domain (I = MAX - sample) so that +EV always brightens and -EV always darkens.
+
+	-contrast DC LOW MID HIGH	Adjust contrast with four controls in the DCT
+				domain: DC for DC coefficients, and LOW/MID/HIGH
+				for AC coefficients.
+DC is scaled by c = 2^DC.
+AC coefficients are processed in zigzag frequency order with triangular
+low/mid/high weights and scaled by c = 2^V where V is the weighted sum of LOW,
+MID and HIGH.  This allows separate control of coarse structure (low AC),
+texture (mid AC) and fine detail/noise (high AC), without image decode and
+re-encode.
+
+The same component policy as -exposure-comp applies: for YCbCr, BG_YCC and YCCK
+images only the luminance component is scaled; for RGB/BG_RGB images with a
+subtract-green transform only the green component is scaled; otherwise all
+components are scaled.
+
 	-grayscale	Force grayscale output.
 This option discards the chrominance channels if the input image is YCbCr
 (ie, a standard color JPEG), resulting in a grayscale JPEG file.  The

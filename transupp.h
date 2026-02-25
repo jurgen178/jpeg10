@@ -148,8 +148,8 @@ typedef struct {
   boolean crop;			/* if TRUE, crop or wipe source image, or drop */
 
   /* Tonal adjustment options: set by caller */
-  boolean exposure_comp;	/* if TRUE, adjust exposure via DC shift */
-  double  exposure_comp_ev;	/* EV input (can be fractional); DC-only exposure
+     boolean exposure_comp;	/* if TRUE, adjust exposure via DC shift */
+     double  exposure_comp_ev;	/* EV input (can be fractional); DC-only exposure
 				   shift derived from image average level. */
      boolean contrast_adj;		/* if TRUE, apply contrast gains in DCT domain */
      double  contrast_dc;		/* DC control value in stops (0 = neutral) */

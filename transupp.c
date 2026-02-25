@@ -1590,9 +1590,7 @@ do_exposure_comp (j_decompress_ptr srcinfo, j_compress_ptr dstinfo,
     int dctsize;
     JQUANT_TBL *qtbl;
     long q0;
-    long numerator;
     long dc_delta;
-    long delta_samples;
     boolean intensity_domain;
     boolean apply_comp;
     JDIMENSION blk_y;
@@ -1678,6 +1676,7 @@ do_exposure_comp (j_decompress_ptr srcinfo, j_compress_ptr dstinfo,
             intensity_mean = 0.0;
           else if (intensity_mean > (double) maxjsample)
             intensity_mean = (double) maxjsample;
+
           /* +1 to keep log() defined at 0. */
           sum_log += log(intensity_mean + 1.0);
           block_count++;
@@ -1723,26 +1722,30 @@ do_exposure_comp (j_decompress_ptr srcinfo, j_compress_ptr dstinfo,
       else if (delta_intensity_samples_d < -ref_intensity_samples)
         delta_intensity_samples_d = -ref_intensity_samples;
 
-      if (delta_intensity_samples_d >= 0.0)
-        delta_samples = (long) (delta_intensity_samples_d + 0.5);
-      else
-        delta_samples = (long) (delta_intensity_samples_d - 0.5);
+      /* Translate sample-domain delta into a quantized DC delta.
+       * Do this in floating point so we don't lose small deltas due to early
+       * rounding on very dark images.
+       */
+      {
+        double delta_samples_d = intensity_domain ? -delta_intensity_samples_d
+                                                  :  delta_intensity_samples_d;
+        double numerator_d;
+        double dc_delta_d;
 
-      if (intensity_domain)
-        delta_samples = -delta_samples;
+        /* Extra safety clamp in sample units. */
+        if (delta_samples_d > (double) maxjsample)
+          delta_samples_d = (double) maxjsample;
+        else if (delta_samples_d < -(double) maxjsample)
+          delta_samples_d = -(double) maxjsample;
 
-      /* Extra safety clamp in sample units. */
-      if (delta_samples > maxjsample)
-        delta_samples = maxjsample;
-      else if (delta_samples < -maxjsample)
-        delta_samples = -maxjsample;
+        numerator_d = delta_samples_d * (double) dctsize;
+        dc_delta_d = numerator_d / (double) q0;
+        if (dc_delta_d >= 0.0)
+          dc_delta = (long) (dc_delta_d + 0.5);
+        else
+          dc_delta = (long) (dc_delta_d - 0.5);
+      }
     }
-
-    numerator = delta_samples * (long) dctsize;
-    if (numerator >= 0)
-      dc_delta = (numerator + q0 / 2L) / q0;
-    else
-      dc_delta = (numerator - q0 / 2L) / q0;
 
     if (dc_delta == 0)
       continue;

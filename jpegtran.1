@@ -1,10 +1,21 @@
-.TH JPEGTRAN 1 "23 February 2026"
+.TH JPEGTRAN 1 "25 February 2026"
 .SH NAME
 jpegtran \- lossless transformation of JPEG files
 .SH SYNOPSIS
 .B jpegtran
 [
 .I options
+]
+[
+.B \-exposure-comp
+.I EV
+]
+[
+.B \-contrast
+.I DC
+.I LOW
+.I MID
+.I HIGH
 ]
 [
 .I filename
@@ -18,6 +29,11 @@ It can translate the coded representation from one variant of JPEG to another,
 for example from baseline JPEG to progressive JPEG or vice versa.  It can also
 perform some rearrangements of the image data, for example turning an image
 from landscape to portrait format by rotation.
+.PP
+In addition to geometric transforms, jpegtran can apply tonal adjustments in
+the DCT domain without full image decode/re-encode, such as DC-only exposure
+compensation (\-exposure\-comp) and multi-band contrast adjustment
+(\-contrast).
 .PP
 For EXIF files and JPEG files containing Exif data, you may prefer to use
 .B exiftran
@@ -221,15 +237,23 @@ Other not-strictly-lossless transformation switches are:
 Adjust brightness in an exposure-like manner using an EV value.
 The operation is implemented as a DC-only brightness shift (only DC
 coefficients are modified; AC coefficients and thus local contrast/texture are
-preserved).  EV is interpreted in linear-light (assuming sRGB transfer for
-sample values), then approximated as a constant DC-only shift computed from
-the image's average level derived from DC blocks.
+preserved).  EV is interpreted as a gain of 2^EV in linear-light; since only
+DC is modified, this is approximated as a constant DC-only shift computed from
+a log-average (geometric mean) reference level derived from the image's DC
+blocks.  The gain is applied in linear-light (assuming an sRGB transfer for
+sample values) and mapped back to an additive sample-domain offset.
+.IP
+The offset is clamped to available headroom/shadow room (relative to the
+reference level) to limit extreme clipping.
 .IP
 For YCbCr, BG_YCC and YCCK images the shift is applied to the luminance
 component only to avoid changing saturation or hue.
 For RGB and BG_RGB images encoded with a subtract-green transform, only the
 green (base) component is adjusted to avoid hue shifts.
 For all other color spaces the shift is applied to all components.
+.IP
+For CMYK and YCCK images, the EV delta is computed in an inverted intensity
+domain (I = MAX - sample) so that +EV always brightens and -EV always darkens.
 .TP
 .BI \-contrast " DC LOW MID HIGH"
 Adjust contrast with four controls in the DCT domain:
