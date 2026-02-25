@@ -23,6 +23,7 @@
 #include "jpeglib.h"
 #include "transupp.h"		/* My own external interface */
 #include <ctype.h>		/* to declare isdigit() */
+#include <math.h>		/* for pow() */
 
 
 #if TRANSFORMS_SUPPORTED
@@ -1525,6 +1526,391 @@ do_transverse (j_decompress_ptr srcinfo, j_compress_ptr dstinfo,
   }
 }
 
+LOCAL(double)
+srgb_to_linear (double u)
+{
+  if (u <= 0.04045)
+    return u / 12.92;
+  return pow((u + 0.055) / 1.055, 2.4);
+}
+
+LOCAL(double)
+linear_to_srgb (double u)
+{
+  if (u <= 0.0031308)
+    return 12.92 * u;
+  return 1.055 * pow(u, 1.0 / 2.4) - 0.055;
+}
+
+LOCAL(void)
+do_exposure_comp (j_decompress_ptr srcinfo, j_compress_ptr dstinfo,
+		  jvirt_barray_ptr *coef_arrays, jpeg_transform_info *info)
+/* Apply exposure compensation by shifting the quantized DC coefficient of
+ * each DCT block. This avoids full re-encoding and keeps AC coefficients
+ * unchanged (so local contrast/texture is preserved).
+ *
+ * The command-line argument is interpreted as an exposure-like EV value.
+ * Since we only modify DC (not AC), we implement EV as a constant exposure
+ * shift whose magnitude is computed from the image's average level (derived
+ * from the DC blocks):
+ *
+ *   gain = 2^EV
+ *   delta_samples is derived by applying the gain in linear-light (sRGB
+ *   transfer assumed for sample values) at a reference level, then converting
+ *   back to a constant sample-domain offset.
+ *
+ * For each affected component we translate this pixel-domain offset into a
+ * quantized DC delta using: delta_dc_quant ~= round(delta_samples * N / Q[0])
+ * where N is the DCT block size (typically 8, but can be 1..16 when scaled
+ * DCT is used) and Q[0] is the DC quantization step size for that component.
+ */
+{
+  int ci;
+  int precision;
+  long centerjsample;
+  long maxjsample;
+  double gain;
+
+  if (!info->exposure_comp || info->exposure_comp_ev == 0.0)
+    return;
+
+  precision = dstinfo->data_precision;
+  if (precision <= 0 || precision > 16)
+    return;
+  
+  centerjsample = 1L << (precision - 1);
+  maxjsample = (1L << precision) - 1L;
+
+  gain = pow(2.0, info->exposure_comp_ev);
+  if (gain == 1.0)
+    return;
+
+  for (ci = 0; ci < dstinfo->num_components; ci++) {
+    jpeg_component_info *compptr = dstinfo->comp_info + ci;
+    int dctsize;
+    JQUANT_TBL *qtbl;
+    long q0;
+    long numerator;
+    long dc_delta;
+    long delta_samples;
+    boolean intensity_domain;
+    boolean apply_comp;
+    JDIMENSION blk_y;
+
+    /* Component policy:
+     * - For YCbCr/BG_YCC/YCCK apply to luma only (component 0).
+     * - For RGB/BG_RGB with subtract-green transform (RGB1: [R-G,G,B-G]),
+     *   apply to the base G component only (component 1) to avoid hue shifts.
+     * - Otherwise apply to all components.
+     */
+    if (srcinfo->jpeg_color_space == JCS_YCbCr ||
+        srcinfo->jpeg_color_space == JCS_BG_YCC ||
+        srcinfo->jpeg_color_space == JCS_YCCK) {
+      apply_comp = (ci == 0);
+    } else if ((srcinfo->jpeg_color_space == JCS_RGB ||
+                srcinfo->jpeg_color_space == JCS_BG_RGB) &&
+                srcinfo->color_transform == JCT_SUBTRACT_GREEN) {
+      apply_comp = (ci == 1);
+    } else {
+      apply_comp = TRUE;
+    }
+
+    /* CMYK is subtractive (more ink = darker). Adobe-style YCCK is also
+     * effectively inverted with respect to displayed exposure (see
+     * ycck_cmyk_convert uses MAX - (y + ...)). To make +EV brighten and -EV
+     * darken, compute EV deltas in an intensity domain I = MAX - sample,
+     * then map back to sample domain.
+     */
+    intensity_domain = (srcinfo->jpeg_color_space == JCS_CMYK ||
+                        srcinfo->jpeg_color_space == JCS_YCCK);
+
+    if (!apply_comp)
+      continue;
+
+    qtbl = dstinfo->quant_tbl_ptrs[compptr->quant_tbl_no];
+    if (qtbl == NULL)
+      continue;
+    q0 = (long) qtbl->quantval[0];
+    if (q0 <= 0)
+      continue;
+
+    /* The DC coefficient represents the (scaled) sum/average of the
+     * level-shifted samples over the component's DCT block. For the default
+     * 8x8 DCT, mean(samples) = DC_unquant/8 + center. With scaled DCT (e.g.
+     * block_size=1 for lossless-compressed mode), the divisor becomes the
+     * actual scaled DCT size.
+     */
+    dctsize = compptr->DCT_h_scaled_size;
+    if (dctsize <= 0)
+      continue;
+    if (compptr->DCT_v_scaled_size != dctsize)
+      continue;
+
+    /* Estimate a reference level for this component from the quantized DC
+     * coefficients.
+     *
+     * EV is inherently multiplicative, so we use a log-average (geometric
+     * mean) of block mean levels as a more stable exposure reference than an
+     * arithmetic mean.
+     */
+    {
+      double sum_log = 0.0;
+      long long block_count = 0;
+      double ref_intensity_samples;
+      double delta_intensity_samples_d;
+
+      for (blk_y = 0; blk_y < compptr->height_in_blocks; blk_y++) {
+        JBLOCKARRAY buffer = (*srcinfo->mem->access_virt_barray)
+          ((j_common_ptr) srcinfo, coef_arrays[ci], blk_y, (JDIMENSION) 1, FALSE);
+        JBLOCKROW rowptr = buffer[0];
+        JDIMENSION blk_x;
+        for (blk_x = 0; blk_x < compptr->width_in_blocks; blk_x++) {
+          double dc_unquant = (double) rowptr[blk_x][0] * (double) q0;
+          double block_mean = (dc_unquant / (double) dctsize) + (double) centerjsample;
+          double intensity_mean;
+          if (block_mean < 0.0)
+            block_mean = 0.0;
+          else if (block_mean > (double) maxjsample)
+            block_mean = (double) maxjsample;
+
+          intensity_mean = intensity_domain ? ((double) maxjsample - block_mean) : block_mean;
+          if (intensity_mean < 0.0)
+            intensity_mean = 0.0;
+          else if (intensity_mean > (double) maxjsample)
+            intensity_mean = (double) maxjsample;
+          /* +1 to keep log() defined at 0. */
+          sum_log += log(intensity_mean + 1.0);
+          block_count++;
+        }
+      }
+
+      if (block_count <= 0)
+        continue;
+
+      ref_intensity_samples = exp(sum_log / (double) block_count) - 1.0;
+      if (ref_intensity_samples < 0.0)
+        ref_intensity_samples = 0.0;
+      else if (ref_intensity_samples > (double) maxjsample)
+        ref_intensity_samples = (double) maxjsample;
+
+      /* EV is defined in linear-light. JPEG sample values are typically
+       * gamma-coded (sRGB), so applying EV directly to sample values is
+       * overly strong. Compute an equivalent additive shift by applying the
+       * gain in linear-light at the reference level, then mapping back.
+       */
+      {
+        double ref_u = ref_intensity_samples / (double) maxjsample;
+        double ref_lin = srgb_to_linear(ref_u);
+        double new_lin = ref_lin * gain;
+        double new_u;
+        if (new_lin > 1.0)
+          new_lin = 1.0;
+        else if (new_lin < 0.0)
+          new_lin = 0.0;
+        new_u = linear_to_srgb(new_lin);
+        if (new_u > 1.0)
+          new_u = 1.0;
+        else if (new_u < 0.0)
+          new_u = 0.0;
+        delta_intensity_samples_d = (new_u - ref_u) * (double) maxjsample;
+      }
+
+      /* Since we only shift DC (no AC), clamp the offset to available
+       * headroom/shadow room to avoid extreme clipping.
+       */
+      if (delta_intensity_samples_d > (double) (maxjsample) - ref_intensity_samples)
+        delta_intensity_samples_d = (double) (maxjsample) - ref_intensity_samples;
+      else if (delta_intensity_samples_d < -ref_intensity_samples)
+        delta_intensity_samples_d = -ref_intensity_samples;
+
+      if (delta_intensity_samples_d >= 0.0)
+        delta_samples = (long) (delta_intensity_samples_d + 0.5);
+      else
+        delta_samples = (long) (delta_intensity_samples_d - 0.5);
+
+      if (intensity_domain)
+        delta_samples = -delta_samples;
+
+      /* Extra safety clamp in sample units. */
+      if (delta_samples > maxjsample)
+        delta_samples = maxjsample;
+      else if (delta_samples < -maxjsample)
+        delta_samples = -maxjsample;
+    }
+
+    numerator = delta_samples * (long) dctsize;
+    if (numerator >= 0)
+      dc_delta = (numerator + q0 / 2L) / q0;
+    else
+      dc_delta = (numerator - q0 / 2L) / q0;
+
+    if (dc_delta == 0)
+      continue;
+
+    for (blk_y = 0; blk_y < compptr->height_in_blocks; blk_y++) {
+      JBLOCKARRAY buffer = (*srcinfo->mem->access_virt_barray)
+        ((j_common_ptr) srcinfo, coef_arrays[ci], blk_y, (JDIMENSION) 1, TRUE);
+      JBLOCKROW rowptr = buffer[0];
+      JDIMENSION blk_x;
+
+      for (blk_x = 0; blk_x < compptr->width_in_blocks; blk_x++) {
+        long new_dc = (long) rowptr[blk_x][0] + dc_delta;
+        if (new_dc > 32767L)
+          new_dc = 32767L;
+        else if (new_dc < -32768L)
+          new_dc = -32768L;
+        rowptr[blk_x][0] = (JCOEF) new_dc;
+      }
+    }
+  }
+}
+
+LOCAL(void)
+do_contrast (j_decompress_ptr srcinfo, j_compress_ptr dstinfo,
+	     jvirt_barray_ptr *coef_arrays, jpeg_transform_info *info)
+/* Apply contrast adjustment with separate controls:
+ * - DC is scaled by c_dc = 2^contrast_dc.
+ * - AC is scaled in zigzag frequency order by triangular weights over
+ *   low/mid/high controls (also interpreted as powers of two).
+ *
+ * For AC zigzag position z = 1..N (N = #AC coefficients), let
+ *   t = (z-1)/(N-1),
+ *   w_low  = max(0, 1 - 2t),
+ *   w_mid  = 1 - |2t - 1|,
+ *   w_high = max(0, 2t - 1).
+ * Then gain is g(z) = 2^(v_low*w_low + v_mid*w_mid + v_high*w_high).
+ *
+ * Component policy: same as do_exposure_comp.
+ */
+{
+  int ci;
+  int precision;
+  double contrast_dc_factor;
+  const int *natural_order;
+
+  if (!info->contrast_adj)
+    return;
+
+  precision = dstinfo->data_precision;
+  if (precision <= 0 || precision > 16)
+    return;
+
+  if (info->contrast_dc == 0.0 &&
+      info->contrast_low == 0.0 &&
+      info->contrast_mid == 0.0 &&
+      info->contrast_high == 0.0)
+    return;
+
+  contrast_dc_factor = pow(2.0, info->contrast_dc);
+  natural_order = dstinfo->natural_order;
+  if (natural_order == NULL)
+    natural_order = jpeg_natural_order;
+
+  for (ci = 0; ci < dstinfo->num_components; ci++) {
+    jpeg_component_info *compptr = dstinfo->comp_info + ci;
+    int dctsize;
+    int block_coefs;
+    boolean apply_comp;
+    JDIMENSION blk_y;
+
+    /* Component policy: same as do_exposure_comp.
+     * - For YCbCr/BG_YCC/YCCK apply to luma only (component 0).
+     * - For RGB/BG_RGB with subtract-green transform (RGB1: [R-G,G,B-G]),
+     *   apply to the base G component only (component 1) to avoid hue shifts.
+     * - Otherwise apply to all components.
+     */
+    if (srcinfo->jpeg_color_space == JCS_YCbCr ||
+        srcinfo->jpeg_color_space == JCS_BG_YCC ||
+        srcinfo->jpeg_color_space == JCS_YCCK) {
+      apply_comp = (ci == 0);
+    } else if ((srcinfo->jpeg_color_space == JCS_RGB ||
+                srcinfo->jpeg_color_space == JCS_BG_RGB) &&
+                srcinfo->color_transform == JCT_SUBTRACT_GREEN) {
+      apply_comp = (ci == 1);
+    } else {
+      apply_comp = TRUE;
+    }
+
+    if (!apply_comp)
+      continue;
+
+    dctsize = compptr->DCT_h_scaled_size;
+    if (dctsize <= 0)
+      continue;
+    block_coefs = dctsize * compptr->DCT_v_scaled_size;
+
+    for (blk_y = 0; blk_y < compptr->height_in_blocks; blk_y++) {
+      JBLOCKARRAY buffer = (*srcinfo->mem->access_virt_barray)
+        ((j_common_ptr) srcinfo, coef_arrays[ci], blk_y, (JDIMENSION) 1, TRUE);
+      JBLOCKROW rowptr = buffer[0];
+      JDIMENSION blk_x;
+
+      for (blk_x = 0; blk_x < compptr->width_in_blocks; blk_x++) {
+        long new_val;
+
+        /* DC */
+        if (contrast_dc_factor != 1.0) {
+          double scaled = contrast_dc_factor * (double) rowptr[blk_x][0];
+          if (scaled >= 0.0)
+            new_val = (long) (scaled + 0.5);
+          else
+            new_val = (long) (scaled - 0.5);
+          if (new_val > 32767L)
+            new_val = 32767L;
+          else if (new_val < -32768L)
+            new_val = -32768L;
+          rowptr[blk_x][0] = (JCOEF) new_val;
+        }
+
+        /* AC in zigzag order, weighted low/mid/high */
+        if (block_coefs > 1) {
+          int ac_count = block_coefs - 1;
+          int z;
+
+          for (z = 1; z <= ac_count; z++) {
+            int k = natural_order[z];
+            double t;
+            double w_low, w_mid, w_high;
+            double v, gain, scaled;
+
+            if (ac_count > 1)
+              t = (double) (z - 1) / (double) (ac_count - 1);
+            else
+              t = 0.0;
+
+            w_low = 1.0 - 2.0 * t;
+            if (w_low < 0.0)
+              w_low = 0.0;
+
+            w_mid = 1.0 - fabs(2.0 * t - 1.0);
+
+            w_high = 2.0 * t - 1.0;
+            if (w_high < 0.0)
+              w_high = 0.0;
+
+            v = info->contrast_low * w_low +
+          info->contrast_mid * w_mid +
+          info->contrast_high * w_high;
+            gain = pow(2.0, v);
+            if (gain == 1.0)
+              continue;
+
+            scaled = gain * (double) rowptr[blk_x][k];
+            if (scaled >= 0.0)
+              new_val = (long) (scaled + 0.5);
+            else
+              new_val = (long) (scaled - 0.5);
+            if (new_val > 32767L)
+              new_val = 32767L;
+            else if (new_val < -32768L)
+              new_val = -32768L;
+            rowptr[blk_x][k] = (JCOEF) new_val;
+          }
+        }
+      }
+    }
+  }
+}
 
 /* Parse an unsigned integer: subroutine for jtransform_parse_crop_spec.
  * Returns TRUE if valid integer found, FALSE if not.
@@ -2317,6 +2703,7 @@ jtransform_execute_transform (j_decompress_ptr srcinfo,
 			      jpeg_transform_info *info)
 {
   jvirt_barray_ptr *dst_coef_arrays = info->workspace_coef_arrays;
+  jvirt_barray_ptr *out_coef_arrays;
 
   /* Note: conditions tested here should match those in switch statement
    * in jtransform_request_workspace()
@@ -2408,6 +2795,15 @@ jtransform_execute_transform (j_decompress_ptr srcinfo,
 			src_coef_arrays);
     break;
   }
+
+  /* Apply optional tonal adjustments as a post-step.
+   * Both compose cleanly with rotate/flip/crop because they operate per-block.
+   * do_exposure_comp shifts DC only; do_contrast scales all coefficients.
+   */
+  out_coef_arrays = (info->workspace_coef_arrays != NULL) ?
+    info->workspace_coef_arrays : src_coef_arrays;
+  do_exposure_comp(srcinfo, dstinfo, out_coef_arrays, info);
+  do_contrast(srcinfo, dstinfo, out_coef_arrays, info);
 }
 
 /* jtransform_perfect_transform

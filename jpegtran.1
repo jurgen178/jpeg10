@@ -1,4 +1,4 @@
-.TH JPEGTRAN 1 "20 November 2025"
+.TH JPEGTRAN 1 "23 February 2026"
 .SH NAME
 jpegtran \- lossless transformation of JPEG files
 .SH SYNOPSIS
@@ -216,6 +216,37 @@ option can be used with the drop option to requantize the drop file
 to the source file.
 .PP
 Other not-strictly-lossless transformation switches are:
+.TP
+.BI \-exposure-comp " EV"
+Adjust brightness in an exposure-like manner using an EV value.
+The operation is implemented as a DC-only brightness shift (only DC
+coefficients are modified; AC coefficients and thus local contrast/texture are
+preserved).  EV is interpreted in linear-light (assuming sRGB transfer for
+sample values), then approximated as a constant DC-only shift computed from
+the image's average level derived from DC blocks.
+.IP
+For YCbCr, BG_YCC and YCCK images the shift is applied to the luminance
+component only to avoid changing saturation or hue.
+For RGB and BG_RGB images encoded with a subtract-green transform, only the
+green (base) component is adjusted to avoid hue shifts.
+For all other color spaces the shift is applied to all components.
+.TP
+.BI \-contrast " DC LOW MID HIGH"
+Adjust contrast with four controls in the DCT domain:
+DC for DC coefficients, and LOW/MID/HIGH for AC coefficients.
+.IP
+DC is scaled by c\ =\ 2^DC.
+AC coefficients are weighted in zigzag frequency order with triangular
+low/mid/high weights and scaled by c\ =\ 2^V where V is the weighted sum
+of LOW, MID and HIGH.
+This allows separate control of coarse structure (low AC), texture (mid AC)
+and fine detail/noise (high AC), without image decode/re-encode.
+.IP
+The same component policy as
+.B \-exposure\-comp
+applies: for YCbCr, BG_YCC and YCCK images only the luminance component is
+scaled; for RGB/BG_RGB images with subtract-green transform only the green
+component is scaled; otherwise all components are scaled.
 .TP
 .B \-grayscale
 Force grayscale output.

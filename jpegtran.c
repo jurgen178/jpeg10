@@ -71,6 +71,8 @@ usage (void)
   fprintf(stderr, "  -flip [horizontal|vertical]  Mirror image (left-right or top-bottom)\n");
   fprintf(stderr, "  -grayscale     Reduce to grayscale (omit color data)\n");
   fprintf(stderr, "  -negate        Negate image (invert component data)\n");
+  fprintf(stderr, "  -exposure-comp EV            Adjust exposure by EV stops (DC shift, sRGB-linearised)\n");
+  fprintf(stderr, "  -contrast DC LOW MID HIGH    Set contrast controls for DC/low/mid/high AC\n");
   fprintf(stderr, "  -perfect       Fail if there is non-transformable edge blocks\n");
   fprintf(stderr, "  -rotate [90|180|270]         Rotate image (degrees clockwise)\n");
 #endif
@@ -148,6 +150,13 @@ parse_switches (j_compress_ptr cinfo, int argc, char **argv,
   transformoption.trim = FALSE;
   transformoption.force_grayscale = FALSE;
   transformoption.crop = FALSE;
+  transformoption.exposure_comp = FALSE;
+  transformoption.exposure_comp_ev = 0.0;
+  transformoption.contrast_adj = FALSE;
+  transformoption.contrast_dc = 0.0;
+  transformoption.contrast_low = 0.0;
+  transformoption.contrast_mid = 0.0;
+  transformoption.contrast_high = 0.0;
   cinfo->err->trace_level = 0;
 
   /* Scan command line options, adjust parameters */
@@ -256,6 +265,53 @@ parse_switches (j_compress_ptr cinfo, int argc, char **argv,
     } else if (keymatch(arg, "negate", 1)) {
       /* Negate (invert component data). */
       select_transform(JXFORM_NEGATE);
+
+    } else if (keymatch(arg, "exposure-comp", 2)) {
+      /* Exposure compensation in EV, implemented as a DC-only shift.
+       * EV is converted into a sample offset using the image's average level
+       * derived from DC blocks.
+       */
+#if TRANSFORMS_SUPPORTED
+      double dval;
+      if (++argn >= argc)	/* advance to next argument */
+	usage();
+      if (sscanf(argv[argn], "%lf", &dval) != 1)
+	usage();
+      transformoption.exposure_comp = TRUE;
+      transformoption.exposure_comp_ev = dval;
+#else
+      select_transform(JXFORM_NONE);	/* force an error */
+#endif
+
+    } else if (keymatch(arg, "contrast", 3)) {
+      /* Set contrast controls as four values: DC LOW MID HIGH. */
+#if TRANSFORMS_SUPPORTED
+      double dc, low, mid, high;
+      if (++argn >= argc)	/* advance to next argument */
+	usage();
+	if (sscanf(argv[argn], "%lf", &dc) != 1)
+	usage();
+      if (++argn >= argc)	/* advance to next argument */
+        usage();
+      if (sscanf(argv[argn], "%lf", &low) != 1)
+        usage();
+      if (++argn >= argc)	/* advance to next argument */
+        usage();
+      if (sscanf(argv[argn], "%lf", &mid) != 1)
+        usage();
+      if (++argn >= argc)	/* advance to next argument */
+        usage();
+      if (sscanf(argv[argn], "%lf", &high) != 1)
+        usage();
+
+      transformoption.contrast_adj = TRUE;
+      transformoption.contrast_dc = dc;
+      transformoption.contrast_low = low;
+      transformoption.contrast_mid = mid;
+      transformoption.contrast_high = high;
+#else
+      select_transform(JXFORM_NONE);	/* force an error */
+#endif
 
     } else if (keymatch(arg, "maxmemory", 3)) {
       /* Maximum memory in Kb (or Mb with 'm'). */
