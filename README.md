@@ -6,7 +6,7 @@ Fork of the [Independent JPEG Group's](https://ijg.org/) JPEG-10 library that ex
 | Switch | Purpose |
 |---|---|
 | `-exposure-comp EV` | Adjust exposure by EV stops — DC-only shift, sRGB-linearised |
-| `-contrast CV` | Adjust contrast by CV stops — scales all DCT coefficients (DC + AC) |
+| `-contrast DC LOW MID HIGH` | Adjust contrast in the DCT domain using four band controls (DC / low / mid / high) |
 
 Both operate entirely in the **DCT coefficient domain**.  No decode, no re-encode, no
 generation loss.  They compose cleanly with all existing `jpegtran` options
@@ -17,7 +17,7 @@ generation loss.  They compose cleanly with all existing `jpegtran` options
 ## Usage
 
 ```
-jpegtran [standard options] [-exposure-comp EV] [-contrast CV] input.jpg output.jpg
+jpegtran [standard options] [-exposure-comp EV] [-contrast DC LOW MID HIGH] input.jpg output.jpg
 ```
 
 **Examples**
@@ -29,11 +29,19 @@ jpegtran -copy all -exposure-comp 1 input.jpg output.jpg
 # Darken by 0.5 stops
 jpegtran -copy all -exposure-comp -0.5 input.jpg output.jpg
 
-# Increase contrast by 1 stop
-jpegtran -copy all -contrast 1 input.jpg output.jpg
+# Contrast (uniform: DC=LOW=MID=HIGH; matches the old single-value behavior)
+jpegtran -copy all -contrast -1   -1   -1   -1   input.jpg out-contrast-u-1.jpg
+jpegtran -copy all -contrast -0.5 -0.5 -0.5 -0.5 input.jpg out-contrast-u-0.5.jpg
+jpegtran -copy all -contrast  0.5  0.5  0.5  0.5 input.jpg out-contrast-u+0.5.jpg
+jpegtran -copy all -contrast  1    1    1    1   input.jpg out-contrast-u+1.jpg
 
-# Combine: rotate 90°, brighten 0.5 EV, increase contrast 0.5 CV
-jpegtran -copy all -rot 90 -exposure-comp 0.5 -contrast 0.5 input.jpg output.jpg
+# Contrast (band-specific examples)
+jpegtran -copy all -contrast 0 0 0.6 0   input.jpg out-contrast-mid+0.6.jpg
+jpegtran -copy all -contrast 0 0 0   0.4 input.jpg out-contrast-high+0.4.jpg
+jpegtran -copy all -contrast 0 0.4 0 0   input.jpg out-contrast-low+0.4.jpg
+
+# Combine: rotate 90°, brighten 0.5 EV, and add uniform contrast +0.5
+jpegtran -copy all -rot 90 -exposure-comp 0.5 -contrast 0.5 0.5 0.5 0.5 input.jpg output.jpg
 ```
 
 Both switches accept fractional values.  Practical ranges:
@@ -41,7 +49,7 @@ Both switches accept fractional values.  Practical ranges:
 | Option | Practical range | Neutral |
 |---|---|---|
 | `-exposure-comp EV` | −3 … +3 | 0 |
-| `-contrast CV` | −1.5 … +1.5 | 0 |
+| `-contrast DC LOW MID HIGH` | −1.5 … +1.5 (each) | 0 |
 
 ---
 
@@ -55,7 +63,7 @@ Each block has one **DC coefficient** and 63 **AC coefficients**:
 - **DC[0]** — represents the (level-shifted) average sample value of the block.
   The relationship to pixel mean is:
 
-  $$\text{block\_mean} = \frac{DC_\text{unquant}}{N} + \text{center}$$
+  $$\mu = \frac{DC_\text{unquant}}{N} + \text{center}$$
 
   where $N$ is the DCT block size (typically 8) and
   $\text{center} = 2^{\text{precision}-1}$ (e.g. 128 for 8-bit).
@@ -106,20 +114,20 @@ The gain is applied in **linear light**:
 
 $$u_\text{ref} = \frac{\bar{L}}{\text{MAX}}$$
 
-$$u_\text{ref,lin} = \text{sRGB\_to\_linear}(u_\text{ref})$$
+$$u_\text{ref,lin} = f_\text{lin}(u_\text{ref})$$
 
 $$u_\text{new,lin} = \min(u_\text{ref,lin} \cdot \text{gain},\; 1.0)$$
 
-$$u_\text{new} = \text{linear\_to\_sRGB}(u_\text{new,lin})$$
+$$u_\text{new} = f_\text{sRGB}(u_\text{new,lin})$$
 
 The sRGB transfer functions used:
 
-$$\text{sRGB\_to\_linear}(u) = \begin{cases}
+$$f_\text{lin}(u) = \begin{cases}
   u / 12.92 & u \le 0.04045 \\
   \left(\dfrac{u + 0.055}{1.055}\right)^{2.4} & u > 0.04045
 \end{cases}$$
 
-$$\text{linear\_to\_sRGB}(u) = \begin{cases}
+$$f_\text{sRGB}(u) = \begin{cases}
   12.92\,u & u \le 0.0031308 \\
   1.055\,u^{1/2.4} - 0.055 & u > 0.0031308
 \end{cases}$$
@@ -153,38 +161,66 @@ For CMYK and YCCK the delta is computed in an **inverted intensity domain**
 −EV always means "darker".
 
 ---
-
-### `-contrast CV` — Contrast Adjustment
+### `-contrast DC LOW MID HIGH` — Contrast Adjustment
 
 #### Concept
 
-Contrast is scaled by a factor:
+This option provides **four separate controls** (all in stops):
 
-$$c = 2^{CV}$$
+- `DC` controls the DC coefficient (block mean)
+- `LOW`, `MID`, `HIGH` control the AC coefficients in zigzag frequency order
 
-All DCT coefficients — DC **and** AC — are multiplied by $c$:
+All controls are interpreted as log2 gains (stops). For a value $x$, the gain is:
 
-$$\text{coef}_\text{new}[k] = \text{round}(c \cdot \text{coef}[k])$$
+$$g(x) = 2^{x}$$
 
-clamped to −32768 … 32767.
+#### DC
 
-- **Scaling DC[0]** shifts each block's mean level towards (CV > 0) or away
-  from (CV < 0) zero (mid-grey in level-shifted representation) — bright
-  blocks get brighter, dark blocks get darker.
-- **Scaling AC[1..N²−1]** scales all spatial frequencies proportionally —
-  edges and textures become sharper (CV > 0) or softer (CV < 0).
+DC is scaled by:
 
-Together this gives a **natural contrast adjustment around mid-grey** without
-any decode/re-encode.
+$$g_\mathrm{DC} = 2^{DC}$$
 
-#### Formula Summary
+and applied as:
 
-$$c = 2^{CV}, \quad CV \in \mathbb{R}$$
+$$DC' = \mathrm{clamp}(\mathrm{round}(g_\mathrm{DC} \cdot DC),\; -32768,\; 32767)$$
 
-$$\text{coef}_\text{new}[k] = \text{clamp}\!\left(\text{round}(c \cdot \text{coef}[k]),\; -32768,\; 32767\right)$$
+#### AC (zigzag, low/mid/high weighting)
 
-Applied to all $k = 0 \ldots N^2 - 1$ (for non-square scaled blocks:
-$k = 0 \ldots N_h \cdot N_v - 1$).
+AC coefficients are processed in **zigzag order** (the JPEG natural order).
+Let $z$ be the AC zigzag position with $z = 1 \ldots A$, where $A$ is the
+number of AC coefficients in the block.
+
+Define a normalized position:
+
+$$t = \begin{cases}
+  \dfrac{z-1}{A-1} & A > 1 \\
+  0 & A = 1
+\end{cases}$$
+
+Triangular weights:
+
+$$w_\mathrm{low}  = \max(0, 1 - 2t)$$
+
+$$w_\mathrm{mid}  = 1 - |2t - 1|$$
+
+$$w_\mathrm{high} = \max(0, 2t - 1)$$
+
+The per-coefficient gain exponent is:
+
+$$v(z) = LOW\cdot w_\mathrm{low} + MID\cdot w_\mathrm{mid} + HIGH\cdot w_\mathrm{high}$$
+
+and the per-coefficient gain is:
+
+$$g(z) = 2^{v(z)}$$
+
+Applied to each AC coefficient (in zigzag order):
+
+$$AC'[z] = \mathrm{clamp}(\mathrm{round}(g(z)\cdot AC[z]),\; -32768,\; 32767)$$
+
+This yields a smooth transition from low → mid → high frequencies.
+
+If you set `DC = LOW = MID = HIGH = X`, then all coefficients are scaled by
+the same gain $2^X$ (uniform contrast adjustment).
 
 #### Component Policy
 
@@ -211,7 +247,10 @@ All new code is in `transupp.c` (functions `do_exposure_comp` and
 boolean exposure_comp;    /* if TRUE, adjust exposure via DC shift */
 double  exposure_comp_ev; /* EV input; DC-only exposure shift */
 boolean contrast_adj;     /* if TRUE, scale all DCT coefficients (DC+AC) */
-double  contrast_cv;      /* Contrast in stops: c = 2^CV */
+double  contrast_dc;      /* DC control (stops): gain = 2^contrast_dc */
+double  contrast_low;     /* Low-frequency AC control (stops) */
+double  contrast_mid;     /* Mid-frequency AC control (stops) */
+double  contrast_high;    /* High-frequency AC control (stops) */
 ```
 
 The CLI parsing is in `jpegtran.c`.
