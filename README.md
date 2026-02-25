@@ -29,7 +29,7 @@ jpegtran -copy all -exposure-comp 1 input.jpg output.jpg
 # Darken by 0.5 stops
 jpegtran -copy all -exposure-comp -0.5 input.jpg output.jpg
 
-# Contrast (uniform: DC=LOW=MID=HIGH; matches the old single-value behavior)
+# Contrast (uniform: DC=LOW=MID=HIGH)
 jpegtran -copy all -contrast -1   -1   -1   -1   input.jpg out-contrast-u-1.jpg
 jpegtran -copy all -contrast -0.5 -0.5 -0.5 -0.5 input.jpg out-contrast-u-0.5.jpg
 jpegtran -copy all -contrast  0.5  0.5  0.5  0.5 input.jpg out-contrast-u+0.5.jpg
@@ -37,7 +37,7 @@ jpegtran -copy all -contrast  1    1    1    1   input.jpg out-contrast-u+1.jpg
 
 # Contrast (band-specific examples)
 jpegtran -copy all -contrast 0 0 0.6 0   input.jpg out-contrast-mid+0.6.jpg
-jpegtran -copy all -contrast 0 0 0   0.4 input.jpg out-contrast-high+0.4.jpg
+jpegtran -copy all -contrast 0 0 0 0.4   input.jpg out-contrast-high+0.4.jpg
 jpegtran -copy all -contrast 0 0.4 0 0   input.jpg out-contrast-low+0.4.jpg
 
 # Combine: rotate 90°, brighten 0.5 EV, and add uniform contrast +0.5
@@ -273,3 +273,4 @@ msbuild jpegtran.vcxproj /p:Configuration=Debug /p:Platform=x64
 
 Same as upstream IJG JPEG: see `README` and `usage.txt` in the source tree.
 This fork adds no additional restrictions.
+
