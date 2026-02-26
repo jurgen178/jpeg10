@@ -1569,6 +1569,7 @@ do_exposure_comp (j_decompress_ptr srcinfo, j_compress_ptr dstinfo,
   int precision;
   long centerjsample;
   long maxjsample;
+  long max_dc_diff;
   double gain;
 
   if (!info->exposure_comp || info->exposure_comp_ev == 0.0)
@@ -1577,6 +1578,15 @@ do_exposure_comp (j_decompress_ptr srcinfo, j_compress_ptr dstinfo,
   precision = dstinfo->data_precision;
   if (precision <= 0 || precision > 16)
     return;
+
+  /* Entropy coding constrains DC *differences* (and restart predictors reset
+   * DC prediction to 0), so keep adjusted DC values within the legal
+   * magnitude category for DC differences.
+   * See jchuff.c (JERR_BAD_DCT_COEF): nbits <= precision + 3 for DC.
+   */
+  max_dc_diff = (1L << (precision + 3)) - 1L;
+  if (max_dc_diff > 32767L)
+    max_dc_diff = 32767L;
   
   centerjsample = 1L << (precision - 1);
   maxjsample = (1L << precision) - 1L;
@@ -1750,19 +1760,51 @@ do_exposure_comp (j_decompress_ptr srcinfo, j_compress_ptr dstinfo,
     if (dc_delta == 0)
       continue;
 
-    for (blk_y = 0; blk_y < compptr->height_in_blocks; blk_y++) {
-      JBLOCKARRAY buffer = (*srcinfo->mem->access_virt_barray)
-        ((j_common_ptr) srcinfo, coef_arrays[ci], blk_y, (JDIMENSION) 1, TRUE);
-      JBLOCKROW rowptr = buffer[0];
-      JDIMENSION blk_x;
+    /* DC prediction in the entropy encoder starts at 0 for each component,
+     * and is also reset to 0 at restart intervals. We don't track restart
+     * positions here, so we keep all adjusted DC values within +/-max_dc_diff
+     * to remain restart-safe.
+     */
+    {
+      long last_dc = 0;
 
-      for (blk_x = 0; blk_x < compptr->width_in_blocks; blk_x++) {
-        long new_dc = (long) rowptr[blk_x][0] + dc_delta;
-        if (new_dc > 32767L)
-          new_dc = 32767L;
-        else if (new_dc < -32768L)
-          new_dc = -32768L;
-        rowptr[blk_x][0] = (JCOEF) new_dc;
+      for (blk_y = 0; blk_y < compptr->height_in_blocks; blk_y++) {
+        JBLOCKARRAY buffer = (*srcinfo->mem->access_virt_barray)
+          ((j_common_ptr) srcinfo, coef_arrays[ci], blk_y, (JDIMENSION) 1, TRUE);
+        JBLOCKROW rowptr = buffer[0];
+        JDIMENSION blk_x;
+
+        for (blk_x = 0; blk_x < compptr->width_in_blocks; blk_x++) {
+          long new_dc = (long) rowptr[blk_x][0] + dc_delta;
+          long diff;
+
+          /* JCOEF storage clamp */
+          if (new_dc > 32767L)
+            new_dc = 32767L;
+          else if (new_dc < -32768L)
+            new_dc = -32768L;
+
+          /* Restart-safe absolute clamp */
+          if (new_dc > max_dc_diff)
+            new_dc = max_dc_diff;
+          else if (new_dc < -max_dc_diff)
+            new_dc = -max_dc_diff;
+
+          /* DC-difference clamp */
+          diff = new_dc - last_dc;
+          if (diff > max_dc_diff)
+            new_dc = last_dc + max_dc_diff;
+          else if (diff < -max_dc_diff)
+            new_dc = last_dc - max_dc_diff;
+
+          if (new_dc > max_dc_diff)
+            new_dc = max_dc_diff;
+          else if (new_dc < -max_dc_diff)
+            new_dc = -max_dc_diff;
+
+          rowptr[blk_x][0] = (JCOEF) new_dc;
+          last_dc = new_dc;
+        }
       }
     }
   }
@@ -1790,6 +1832,8 @@ do_contrast (j_decompress_ptr srcinfo, j_compress_ptr dstinfo,
   int precision;
   double contrast_dc_factor;
   const int *natural_order;
+  long max_dc_diff;
+  long max_ac_coef;
 
   if (!info->contrast_adj)
     return;
@@ -1797,6 +1841,19 @@ do_contrast (j_decompress_ptr srcinfo, j_compress_ptr dstinfo,
   precision = dstinfo->data_precision;
   if (precision <= 0 || precision > 16)
     return;
+
+  /* Entropy coding constrains the magnitude categories of coefficients.
+   * For Huffman coding, libjpeg checks:
+   *   DC diff: nbits <= precision + 3
+   *   AC coef: nbits <= precision + 2
+   * See jchuff.c (JERR_BAD_DCT_COEF).
+   */
+  max_dc_diff = (1L << (precision + 3)) - 1L;
+  if (max_dc_diff > 32767L)
+    max_dc_diff = 32767L;
+  max_ac_coef = (1L << (precision + 2)) - 1L;
+  if (max_ac_coef > 32767L)
+    max_ac_coef = 32767L;
 
   if (info->contrast_dc == 0.0 &&
       info->contrast_low == 0.0 &&
@@ -1815,6 +1872,7 @@ do_contrast (j_decompress_ptr srcinfo, j_compress_ptr dstinfo,
     int block_coefs;
     boolean apply_comp;
     JDIMENSION blk_y;
+    long last_dc;
 
     /* Component policy: same as do_exposure_comp.
      * - For YCbCr/BG_YCC/YCCK apply to luma only (component 0).
@@ -1842,6 +1900,9 @@ do_contrast (j_decompress_ptr srcinfo, j_compress_ptr dstinfo,
       continue;
     block_coefs = dctsize * compptr->DCT_v_scaled_size;
 
+    /* DC prediction in the entropy encoder starts at 0 for each component. */
+    last_dc = 0;
+
     for (blk_y = 0; blk_y < compptr->height_in_blocks; blk_y++) {
       JBLOCKARRAY buffer = (*srcinfo->mem->access_virt_barray)
         ((j_common_ptr) srcinfo, coef_arrays[ci], blk_y, (JDIMENSION) 1, TRUE);
@@ -1862,7 +1923,20 @@ do_contrast (j_decompress_ptr srcinfo, j_compress_ptr dstinfo,
             new_val = 32767L;
           else if (new_val < -32768L)
             new_val = -32768L;
+
+          /* Limit DC difference magnitude so the entropy encoder doesn't
+           * produce an out-of-range category (JERR_BAD_DCT_COEF).
+           */
+          {
+            long diff = new_val - last_dc;
+            if (diff > max_dc_diff)
+              new_val = last_dc + max_dc_diff;
+            else if (diff < -max_dc_diff)
+              new_val = last_dc - max_dc_diff;
+          }
+
           rowptr[blk_x][0] = (JCOEF) new_val;
+          last_dc = new_val;
         }
 
         /* AC in zigzag order, weighted low/mid/high */
@@ -1903,10 +1977,10 @@ do_contrast (j_decompress_ptr srcinfo, j_compress_ptr dstinfo,
               new_val = (long) (scaled + 0.5);
             else
               new_val = (long) (scaled - 0.5);
-            if (new_val > 32767L)
-              new_val = 32767L;
-            else if (new_val < -32768L)
-              new_val = -32768L;
+            if (new_val > max_ac_coef)
+              new_val = max_ac_coef;
+            else if (new_val < -max_ac_coef)
+              new_val = -max_ac_coef;
             rowptr[blk_x][k] = (JCOEF) new_val;
           }
         }
