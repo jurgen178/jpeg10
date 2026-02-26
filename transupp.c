@@ -1550,7 +1550,7 @@ do_exposure_comp (j_decompress_ptr srcinfo, j_compress_ptr dstinfo,
  * unchanged (so local contrast/texture is preserved).
  *
  * The command-line argument is interpreted as an exposure-like EV value.
- * Since we only modify DC (not AC), we implement EV as a constant exposure
+ * Since only DC (not AC) is modified, EV is implemented as a constant exposure
  * shift whose magnitude is computed from the image's average level (derived
  * from the DC blocks):
  *
@@ -1559,7 +1559,7 @@ do_exposure_comp (j_decompress_ptr srcinfo, j_compress_ptr dstinfo,
  *   transfer assumed for sample values) at a reference level, then converting
  *   back to a constant sample-domain offset.
  *
- * For each affected component we translate this pixel-domain offset into a
+ * For each affected component this pixel-domain offset is translated into a
  * quantized DC delta using: delta_dc_quant ~= round(delta_samples * N / Q[0])
  * where N is the DCT block size (typically 8, but can be 1..16 when scaled
  * DCT is used) and Q[0] is the DC quantization step size for that component.
@@ -1657,7 +1657,7 @@ do_exposure_comp (j_decompress_ptr srcinfo, j_compress_ptr dstinfo,
     /* Estimate a reference level for this component from the quantized DC
      * coefficients.
      *
-     * EV is inherently multiplicative, so we use a log-average (geometric
+    * EV is inherently multiplicative, so a log-average (geometric
      * mean) of block mean levels as a more stable exposure reference than an
      * arithmetic mean.
      */
@@ -1687,7 +1687,7 @@ do_exposure_comp (j_decompress_ptr srcinfo, j_compress_ptr dstinfo,
           else if (intensity_mean > (double) maxjsample)
             intensity_mean = (double) maxjsample;
 
-          /* +1 to keep log() defined at 0. */
+          /* +1 keeps log() defined at 0. */
           sum_log += log(intensity_mean + 1.0);
           block_count++;
         }
@@ -1702,10 +1702,12 @@ do_exposure_comp (j_decompress_ptr srcinfo, j_compress_ptr dstinfo,
       else if (ref_intensity_samples > (double) maxjsample)
         ref_intensity_samples = (double) maxjsample;
 
-      /* EV is defined in linear-light. JPEG sample values are typically
-       * gamma-coded (sRGB), so applying EV directly to sample values is
-       * overly strong. Compute an equivalent additive shift by applying the
-       * gain in linear-light at the reference level, then mapping back.
+      /* EV is defined as a multiplicative change in linear light. JPEG sample
+       * values are typically stored in a nonlinear (approximately sRGB) encoding.
+       * Consequently, the EV gain is not applied directly in the sample domain.
+       * Instead, the gain is evaluated at a chosen reference level in linear
+       * light and then mapped back, yielding an equivalent constant offset in
+       * sample units.
        */
       {
         double ref_u = ref_intensity_samples / (double) maxjsample;
@@ -1724,7 +1726,7 @@ do_exposure_comp (j_decompress_ptr srcinfo, j_compress_ptr dstinfo,
         delta_intensity_samples_d = (new_u - ref_u) * (double) maxjsample;
       }
 
-      /* Since we only shift DC (no AC), clamp the offset to available
+      /* Since only DC (no AC) is shifted, clamp the offset to available
        * headroom/shadow room to avoid extreme clipping.
        */
       if (delta_intensity_samples_d > (double) (maxjsample) - ref_intensity_samples)
@@ -1733,7 +1735,7 @@ do_exposure_comp (j_decompress_ptr srcinfo, j_compress_ptr dstinfo,
         delta_intensity_samples_d = -ref_intensity_samples;
 
       /* Translate sample-domain delta into a quantized DC delta.
-       * Do this in floating point so we don't lose small deltas due to early
+       * Floating point is used to avoid losing small deltas due to early
        * rounding on very dark images.
        */
       {
@@ -1761,9 +1763,9 @@ do_exposure_comp (j_decompress_ptr srcinfo, j_compress_ptr dstinfo,
       continue;
 
     /* DC prediction in the entropy encoder starts at 0 for each component,
-     * and is also reset to 0 at restart intervals. We don't track restart
-     * positions here, so we keep all adjusted DC values within +/-max_dc_diff
-     * to remain restart-safe.
+     * and is also reset to 0 at restart intervals. Restart positions are not
+     * tracked here, so adjusted DC values are kept within +/-max_dc_diff to
+     * remain restart-safe.
      */
     {
       long last_dc = 0;
@@ -1924,7 +1926,7 @@ do_contrast (j_decompress_ptr srcinfo, j_compress_ptr dstinfo,
           else if (new_val < -32768L)
             new_val = -32768L;
 
-          /* Limit DC difference magnitude so the entropy encoder doesn't
+          /* Limit DC difference magnitude so the entropy encoder does not
            * produce an out-of-range category (JERR_BAD_DCT_COEF).
            */
           {
