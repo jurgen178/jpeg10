@@ -2152,6 +2152,13 @@ jtransform_request_workspace (j_decompress_ptr srcinfo,
   /* Compute output image dimensions and related values. */
   jpeg_core_output_dimensions(srcinfo);
 
+  /* Tonal adjustments are currently not supported for lossless JPEG
+   * (block_size == 1). Signal caller by returning FALSE.
+   */
+  if (srcinfo->block_size == 1 &&
+      (info->exposure_comp || info->contrast_adj))
+    return FALSE;
+
   /* Return right away if -perfect is given and transformation is not perfect.
    */
   if (info->perfect) {
