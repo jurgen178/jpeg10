@@ -1769,9 +1769,10 @@ do_exposure_comp (j_decompress_ptr srcinfo, j_compress_ptr dstinfo,
           if (new_dc > max_valid_dc) {
             new_dc = max_valid_dc;
             /* This block is fully clipped to the highlight ceiling.  Zero out
-             * all AC coefficients: the block content is pure white and any
-             * residual ACs would be amplified by a subsequent do_contrast pass,
-             * producing cosine-basis triangle artefacts in bright areas.
+             * all AC coefficients: the reconstructed block should be uniform
+             * (all pixels at maxjsample), so any residual AC energy is
+             * physically invalid and would produce spurious DCT basis-function
+             * patterns visible as false texture in the clipped area.
              */
             {
               int k;
@@ -1781,7 +1782,7 @@ do_exposure_comp (j_decompress_ptr srcinfo, j_compress_ptr dstinfo,
             }
           } else if (new_dc < min_valid_dc) {
             new_dc = min_valid_dc;
-            /* Same rationale for shadow floor. */
+            /* Same rationale for the shadow floor: all pixels at 0. */
             {
               int k;
               int ncoefs = dctsize * dctsize;
@@ -1801,7 +1802,18 @@ LOCAL(void)
 do_contrast (j_decompress_ptr srcinfo, j_compress_ptr dstinfo,
 	     jvirt_barray_ptr *coef_arrays, jpeg_transform_info *info)
 /* Apply contrast adjustment with separate controls:
- * - DC is scaled by c_dc = 2^contrast_dc.
+ * - DC is scaled by c_dc = 2^contrast_dc, then clamped to the physical
+ *   pixel-domain range [min_valid_dc, max_valid_dc] per component.  This
+ *   mirrors what a pixel-domain encoder does (sample values are clipped to
+ *   [0..maxjsample] before DCT+quantisation), so DC never exceeds values a
+ *   real JPEG encoder would produce.  The maximum inter-block DC difference
+ *   is therefore bounded by max_valid_dc - min_valid_dc (~1020 for 8-bit
+ *   images), always well below the Huffman category limit of 2047, so
+ *   JERR_BAD_DCT_COEF cannot occur regardless of contrast factor.
+ *   Blocks whose DC is pushed to the boundary are considered fully clipped
+ *   (pure white or pure black); their AC coefficients are zeroed because
+ *   the reconstructed block should be uniform and any residual AC energy
+ *   would produce spurious DCT basis-function patterns.
  * - AC is scaled in zigzag frequency order by triangular weights over
  *   low/mid/high controls (also interpreted as powers of two).
  *
@@ -1819,7 +1831,6 @@ do_contrast (j_decompress_ptr srcinfo, j_compress_ptr dstinfo,
   int precision;
   double contrast_dc_factor;
   const int *natural_order;
-  long max_dc_diff;
   long max_ac_coef;
 
   if (!info->contrast_adj)
@@ -1829,15 +1840,13 @@ do_contrast (j_decompress_ptr srcinfo, j_compress_ptr dstinfo,
   if (precision <= 0 || precision > 16)
     return;
 
-  /* Entropy coding constrains the magnitude categories of coefficients.
+  /* Entropy coding constrains AC coefficient magnitude categories.
    * For Huffman coding, libjpeg checks (jchuff.c JERR_BAD_DCT_COEF):
-   *   DC diff: nbits <= precision + 3
    *   AC coef: nbits <= precision + 2
-   * DC is tracked via last_dc so inter-block differences stay within limit.
+   * DC differences are implicitly bounded because we clamp DC to the
+   * physical pixel-domain range [min_valid_dc, max_valid_dc] per block,
+   * keeping max inter-block diff well below the Huffman limit (2047 for 8-bit).
    */
-  max_dc_diff = (1L << (precision + 3)) - 1L;
-  if (max_dc_diff > 32767L)
-    max_dc_diff = 32767L;
   max_ac_coef = (1L << (precision + 2)) - 1L;
   if (max_ac_coef > 32767L)
     max_ac_coef = 32767L;
@@ -1859,7 +1868,7 @@ do_contrast (j_decompress_ptr srcinfo, j_compress_ptr dstinfo,
     int block_coefs;
     boolean apply_comp;
     JDIMENSION blk_y;
-    long last_dc;
+    long max_valid_dc, min_valid_dc;
 
     /* Component policy: same as do_exposure_comp.
      * - For YCbCr/BG_YCC/YCCK apply to luma only (component 0).
@@ -1887,11 +1896,22 @@ do_contrast (j_decompress_ptr srcinfo, j_compress_ptr dstinfo,
       continue;
     block_coefs = dctsize * compptr->DCT_v_scaled_size;
 
-    /* DC prediction resets to 0 at each restart interval and at the start
-     * of each component scan.  Track last_dc so inter-block differences
-     * stay within the entropy-coder limit.
+    /* Compute the physical DC bounds for this component.
+     * These are the same limits a conforming JPEG encoder imposes by clipping
+     * sample values to [0..maxjsample] before DCT and quantisation.
+     * See do_contrast header comment for the rationale.
      */
-    last_dc = 0;
+    {
+      long maxjsample_c = (1L << precision) - 1L;
+      long centerjsample_c = 1L << (precision - 1);
+      JQUANT_TBL *qtbl_c = dstinfo->quant_tbl_ptrs[compptr->quant_tbl_no];
+      long q0_c = (qtbl_c != NULL) ? (long) qtbl_c->quantval[0] : 1L;
+      if (q0_c <= 0L) q0_c = 1L;
+      max_valid_dc = (long)(((double)(maxjsample_c - centerjsample_c) * dctsize) / q0_c + 0.5);
+      min_valid_dc = (long)((-(double)centerjsample_c * dctsize) / q0_c - 0.5);
+      if (max_valid_dc > 32767L) max_valid_dc = 32767L;
+      if (min_valid_dc < -32768L) min_valid_dc = -32768L;
+    }
 
     for (blk_y = 0; blk_y < compptr->height_in_blocks; blk_y++) {
       JBLOCKARRAY buffer = (*srcinfo->mem->access_virt_barray)
@@ -1901,12 +1921,14 @@ do_contrast (j_decompress_ptr srcinfo, j_compress_ptr dstinfo,
 
       for (blk_x = 0; blk_x < compptr->width_in_blocks; blk_x++) {
         long new_val;
+        boolean dc_saturated = FALSE;
 
-        /* DC: scale directly, then enforce entropy-coder difference limit.
-         * contrast_dc_factor scales the DC coefficient (= deviation from the
-         * level-shift centre), which is equivalent to scaling contrast around
-         * middle grey.  last_dc tracking keeps inter-block diffs within the
-         * Huffman category limit so the encoder never produces JERR_BAD_DCT_COEF.
+        /* DC: scale then clamp to the physical pixel-domain range.
+         * A correctly encoded JPEG never has DC outside [min_valid_dc,
+         * max_valid_dc] because sample values are clipped to [0..maxjsample]
+         * before DCT+quantisation.  Maintaining this invariant after scaling
+         * bounds the maximum inter-block difference to ~1020 (8-bit, Q=2),
+         * always below the Huffman category limit of 2047.
          */
         if (contrast_dc_factor != 1.0) {
           double scaled = contrast_dc_factor * (double) rowptr[blk_x][0];
@@ -1914,25 +1936,30 @@ do_contrast (j_decompress_ptr srcinfo, j_compress_ptr dstinfo,
             new_val = (long) (scaled + 0.5);
           else
             new_val = (long) (scaled - 0.5);
-          if (new_val > 32767L)
-            new_val = 32767L;
-          else if (new_val < -32768L)
-            new_val = -32768L;
-          {
-            long diff = new_val - last_dc;
-            if (diff > max_dc_diff)
-              new_val = last_dc + max_dc_diff;
-            else if (diff < -max_dc_diff)
-              new_val = last_dc - max_dc_diff;
+          if (new_val > max_valid_dc) {
+            new_val = max_valid_dc;
+            dc_saturated = TRUE;
+          } else if (new_val < min_valid_dc) {
+            new_val = min_valid_dc;
+            dc_saturated = TRUE;
           }
           rowptr[blk_x][0] = (JCOEF) new_val;
-          last_dc = new_val;
-        } else {
-          last_dc = (long) rowptr[blk_x][0];
         }
+        /* else: contrast_dc_factor == 1.0, DC unchanged, dc_saturated stays FALSE */
 
-        /* AC in zigzag order, weighted low/mid/high */
-        if (block_coefs > 1) {
+        /* AC coefficients: apply the frequency-weighted gain.
+         * Blocks clipped to the DC boundary represent a uniform highlight or
+         * shadow; their AC coefficients are zeroed because any residual AC
+         * energy is physically invalid and would produce spurious DCT
+         * basis-function patterns in the output.
+         */
+        if (dc_saturated) {
+          if (block_coefs > 1) {
+            int z;
+            for (z = 1; z < block_coefs; z++)
+              rowptr[blk_x][natural_order[z]] = 0;
+          }
+        } else if (block_coefs > 1) {
           int ac_count = block_coefs - 1;
           int z;
 
@@ -1957,9 +1984,9 @@ do_contrast (j_decompress_ptr srcinfo, j_compress_ptr dstinfo,
             if (w_high < 0.0)
               w_high = 0.0;
 
-            v = info->contrast_low * w_low +
-          info->contrast_mid * w_mid +
-          info->contrast_high * w_high;
+            v = info->contrast_low  * w_low +
+                info->contrast_mid  * w_mid +
+                info->contrast_high * w_high;
             gain = pow(2.0, v);
             if (gain == 1.0)
               continue;

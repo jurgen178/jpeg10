@@ -625,12 +625,23 @@ domain (I = MAX - sample) so that +EV always brightens and -EV always darkens.
 	-contrast DC LOW MID HIGH	Adjust contrast with four controls in the DCT
 				domain: DC for DC coefficients, and LOW/MID/HIGH
 				for AC coefficients.
-DC is scaled by c = 2^DC.
+DC is scaled by c = 2^DC, then clamped to the physically valid range for the
+image's bit depth and quantisation step (the same range a correct JPEG encoder
+produces after clipping samples to [0..maxsample]).  This ensures that
+inter-block DC differences remain within the Huffman category limit regardless
+of how large the contrast factor is, so the output is always a valid JPEG.
+Blocks whose DC reaches the clipping boundary are treated as fully saturated
+(pure white or pure black); their AC coefficients are zeroed because the
+reconstructed block should be uniform and any residual AC energy would produce
+spurious DCT basis-function patterns in the output.
 AC coefficients are processed in zigzag frequency order with triangular
 low/mid/high weights and scaled by c = 2^V where V is the weighted sum of LOW,
 MID and HIGH.  This allows separate control of coarse structure (low AC),
 texture (mid AC) and fine detail/noise (high AC), without image decode and
 re-encode.
+
+-contrast may be combined with -exposure-comp in a single jpegtran invocation.
+The exposure shift is applied first, then the contrast adjustment.
 
 The same component policy as -exposure-comp applies: for YCbCr, BG_YCC and YCCK
 images only the luminance component is scaled; for RGB/BG_RGB images with a
