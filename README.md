@@ -50,7 +50,7 @@ Both switches accept fractional values. Practical ranges:
 | Option | &nbsp;&nbsp;&nbsp;Practical range | &nbsp;&nbsp;&nbsp;&nbsp;Neutral |
 |-:-|:-:|:-:|
 | `-exposure-comp EV` | -3 … +3 | 0 |
-| `-contrast DC LOW MID HIGH` | -1.5 … +1.5 | 0 |
+| `-contrast DC LOW MID HIGH` | -2 … +2 | 0 |
 
 <br />
 
@@ -66,7 +66,7 @@ Both switches accept fractional values. Practical ranges:
 
 ## Background: DCT Coefficient Basics
 
-A JPEG image is encoded as a grid of DCT blocks (with 8×8 Elements in size). Each block has one **DC coefficient** and 63 **AC coefficients**.  Each MCU might have more than one block depending on the color subsampling.
+A JPEG image is encoded as a grid of DCT blocks (with 8×8 Elements in size). Each block has one **DC coefficient** and 63 **AC coefficients**.  But each MCU might have more than one block depending on the color subsampling.
 
 - **DC[0]** represents the (level-shifted) average sample value of the block. The relationship to pixel mean is:
 
@@ -273,5 +273,6 @@ Both `-exposure-comp` and `-contrast` are applied as a post step after any geome
 - `-exposure-comp EV` shifts brightness by changing only DC coefficients, with EV evaluated in linear light (sRGB transfer) at a log-average reference.
 - `-contrast DC LOW MID HIGH` scales DC and AC coefficients, with AC gains varying smoothly over frequency order using low/mid/high controls.
 - Both run in the DCT domain and integrate naturally into the lossless-transformation workflow of `jpegtran`.
+
 
 
