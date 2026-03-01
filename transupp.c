@@ -1549,7 +1549,7 @@ do_exposure_comp (j_decompress_ptr srcinfo, j_compress_ptr dstinfo,
  * each DCT block. This avoids full re-encoding and keeps AC coefficients
  * unchanged (so local contrast/texture is preserved).
  *
- * The command-line argument is interpreted as an exposure-like EV value.
+ * The exposure compensation is interpreted as an exposure-like EV value.
  * Since only DC (not AC) is modified, EV is implemented as a constant exposure
  * shift whose magnitude is computed from the image's average level (derived
  * from the DC blocks):
@@ -1561,8 +1561,8 @@ do_exposure_comp (j_decompress_ptr srcinfo, j_compress_ptr dstinfo,
  *
  * For each affected component this pixel-domain offset is translated into a
  * quantized DC delta using: delta_dc_quant ~= round(delta_samples * N / Q[0])
- * where N is the DCT block size (typically 8, but can be 1..16 when scaled
- * DCT is used) and Q[0] is the DC quantization step size for that component.
+ * where N is the DCT block size and Q[0] is the DC quantization step size for
+ * that component.
  */
 {
   int ci;
@@ -1634,9 +1634,7 @@ do_exposure_comp (j_decompress_ptr srcinfo, j_compress_ptr dstinfo,
 
     /* The DC coefficient represents the (scaled) sum/average of the
      * level-shifted samples over the component's DCT block. For the default
-     * 8x8 DCT, mean(samples) = DC_unquant/8 + center. With scaled DCT (e.g.
-     * block_size=1 for lossless-compressed mode), the divisor becomes the
-     * actual scaled DCT size.
+     * 8x8 DCT, mean(samples) = DC_unquant/8 + center.
      */
     dctsize = compptr->DCT_h_scaled_size;
     if (dctsize <= 0)
