@@ -1569,7 +1569,6 @@ do_exposure_comp (j_decompress_ptr srcinfo, j_compress_ptr dstinfo,
   int precision;
   long centerjsample;
   long maxjsample;
-  long max_dc_diff;
   double gain;
 
   if (!info->exposure_comp || info->exposure_comp_ev == 0.0)
@@ -1579,15 +1578,6 @@ do_exposure_comp (j_decompress_ptr srcinfo, j_compress_ptr dstinfo,
   if (precision <= 0 || precision > 16)
     return;
 
-  /* Entropy coding constrains DC *differences* (and restart predictors reset
-   * DC prediction to 0), so keep adjusted DC values within the legal
-   * magnitude category for DC differences.
-   * See jchuff.c (JERR_BAD_DCT_COEF): nbits <= precision + 3 for DC.
-   */
-  max_dc_diff = (1L << (precision + 3)) - 1L;
-  if (max_dc_diff > 32767L)
-    max_dc_diff = 32767L;
-  
   centerjsample = 1L << (precision - 1);
   maxjsample = (1L << precision) - 1L;
 
@@ -1657,8 +1647,8 @@ do_exposure_comp (j_decompress_ptr srcinfo, j_compress_ptr dstinfo,
     /* Estimate a reference level for this component from the quantized DC
      * coefficients.
      *
-    * EV is inherently multiplicative, so a log-average (geometric
-     * mean) of block mean levels as a more stable exposure reference than an
+     * EV is inherently multiplicative, so a log-average (geometric mean) of
+     * block mean levels gives a more stable exposure reference than an
      * arithmetic mean.
      */
     {
@@ -1734,17 +1724,13 @@ do_exposure_comp (j_decompress_ptr srcinfo, j_compress_ptr dstinfo,
       else if (delta_intensity_samples_d < -ref_intensity_samples)
         delta_intensity_samples_d = -ref_intensity_samples;
 
-      /* Translate sample-domain delta into a quantized DC delta.
-       * Floating point is used to avoid losing small deltas due to early
-       * rounding on very dark images.
-       */
+      /* Translate sample-domain delta into a quantized DC delta. */
       {
         double delta_samples_d = intensity_domain ? -delta_intensity_samples_d
                                                   :  delta_intensity_samples_d;
         double numerator_d;
         double dc_delta_d;
 
-        /* Extra safety clamp in sample units. */
         if (delta_samples_d > (double) maxjsample)
           delta_samples_d = (double) maxjsample;
         else if (delta_samples_d < -(double) maxjsample)
@@ -1762,13 +1748,14 @@ do_exposure_comp (j_decompress_ptr srcinfo, j_compress_ptr dstinfo,
     if (dc_delta == 0)
       continue;
 
-    /* DC prediction in the entropy encoder starts at 0 for each component,
-     * and is also reset to 0 at restart intervals. Restart positions are not
-     * tracked here, so adjusted DC values are kept within +/-max_dc_diff to
-     * remain restart-safe.
+    /* Apply the DC delta, clamping to the physically valid range.
+     * This prevents highlight clipping from inverting white to black.
      */
     {
-      long last_dc = 0;
+      long max_valid_dc = (long) (((double)(maxjsample - centerjsample) * dctsize) / q0 + 0.5);
+      long min_valid_dc = (long) ((-(double)centerjsample * dctsize) / q0 - 0.5);
+      if (max_valid_dc > 32767L) max_valid_dc = 32767L;
+      if (min_valid_dc < -32768L) min_valid_dc = -32768L;
 
       for (blk_y = 0; blk_y < compptr->height_in_blocks; blk_y++) {
         JBLOCKARRAY buffer = (*srcinfo->mem->access_virt_barray)
@@ -1778,34 +1765,32 @@ do_exposure_comp (j_decompress_ptr srcinfo, j_compress_ptr dstinfo,
 
         for (blk_x = 0; blk_x < compptr->width_in_blocks; blk_x++) {
           long new_dc = (long) rowptr[blk_x][0] + dc_delta;
-          long diff;
 
-          /* JCOEF storage clamp */
-          if (new_dc > 32767L)
-            new_dc = 32767L;
-          else if (new_dc < -32768L)
-            new_dc = -32768L;
-
-          /* Restart-safe absolute clamp */
-          if (new_dc > max_dc_diff)
-            new_dc = max_dc_diff;
-          else if (new_dc < -max_dc_diff)
-            new_dc = -max_dc_diff;
-
-          /* DC-difference clamp */
-          diff = new_dc - last_dc;
-          if (diff > max_dc_diff)
-            new_dc = last_dc + max_dc_diff;
-          else if (diff < -max_dc_diff)
-            new_dc = last_dc - max_dc_diff;
-
-          if (new_dc > max_dc_diff)
-            new_dc = max_dc_diff;
-          else if (new_dc < -max_dc_diff)
-            new_dc = -max_dc_diff;
+          if (new_dc > max_valid_dc) {
+            new_dc = max_valid_dc;
+            /* This block is fully clipped to the highlight ceiling.  Zero out
+             * all AC coefficients: the block content is pure white and any
+             * residual ACs would be amplified by a subsequent do_contrast pass,
+             * producing cosine-basis triangle artefacts in bright areas.
+             */
+            {
+              int k;
+              int ncoefs = dctsize * dctsize;
+              for (k = 1; k < ncoefs; k++)
+                rowptr[blk_x][k] = 0;
+            }
+          } else if (new_dc < min_valid_dc) {
+            new_dc = min_valid_dc;
+            /* Same rationale for shadow floor. */
+            {
+              int k;
+              int ncoefs = dctsize * dctsize;
+              for (k = 1; k < ncoefs; k++)
+                rowptr[blk_x][k] = 0;
+            }
+          }
 
           rowptr[blk_x][0] = (JCOEF) new_dc;
-          last_dc = new_dc;
         }
       }
     }
@@ -1845,10 +1830,10 @@ do_contrast (j_decompress_ptr srcinfo, j_compress_ptr dstinfo,
     return;
 
   /* Entropy coding constrains the magnitude categories of coefficients.
-   * For Huffman coding, libjpeg checks:
+   * For Huffman coding, libjpeg checks (jchuff.c JERR_BAD_DCT_COEF):
    *   DC diff: nbits <= precision + 3
    *   AC coef: nbits <= precision + 2
-   * See jchuff.c (JERR_BAD_DCT_COEF).
+   * DC is tracked via last_dc so inter-block differences stay within limit.
    */
   max_dc_diff = (1L << (precision + 3)) - 1L;
   if (max_dc_diff > 32767L)
@@ -1902,7 +1887,10 @@ do_contrast (j_decompress_ptr srcinfo, j_compress_ptr dstinfo,
       continue;
     block_coefs = dctsize * compptr->DCT_v_scaled_size;
 
-    /* DC prediction in the entropy encoder starts at 0 for each component. */
+    /* DC prediction resets to 0 at each restart interval and at the start
+     * of each component scan.  Track last_dc so inter-block differences
+     * stay within the entropy-coder limit.
+     */
     last_dc = 0;
 
     for (blk_y = 0; blk_y < compptr->height_in_blocks; blk_y++) {
@@ -1914,7 +1902,12 @@ do_contrast (j_decompress_ptr srcinfo, j_compress_ptr dstinfo,
       for (blk_x = 0; blk_x < compptr->width_in_blocks; blk_x++) {
         long new_val;
 
-        /* DC */
+        /* DC: scale directly, then enforce entropy-coder difference limit.
+         * contrast_dc_factor scales the DC coefficient (= deviation from the
+         * level-shift centre), which is equivalent to scaling contrast around
+         * middle grey.  last_dc tracking keeps inter-block diffs within the
+         * Huffman category limit so the encoder never produces JERR_BAD_DCT_COEF.
+         */
         if (contrast_dc_factor != 1.0) {
           double scaled = contrast_dc_factor * (double) rowptr[blk_x][0];
           if (scaled >= 0.0)
@@ -1925,10 +1918,6 @@ do_contrast (j_decompress_ptr srcinfo, j_compress_ptr dstinfo,
             new_val = 32767L;
           else if (new_val < -32768L)
             new_val = -32768L;
-
-          /* Limit DC difference magnitude so the entropy encoder does not
-           * produce an out-of-range category (JERR_BAD_DCT_COEF).
-           */
           {
             long diff = new_val - last_dc;
             if (diff > max_dc_diff)
@@ -1936,9 +1925,10 @@ do_contrast (j_decompress_ptr srcinfo, j_compress_ptr dstinfo,
             else if (diff < -max_dc_diff)
               new_val = last_dc - max_dc_diff;
           }
-
           rowptr[blk_x][0] = (JCOEF) new_val;
           last_dc = new_val;
+        } else {
+          last_dc = (long) rowptr[blk_x][0];
         }
 
         /* AC in zigzag order, weighted low/mid/high */
