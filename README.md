@@ -1,4 +1,4 @@
-#### Lossless Tonal Adjustments in JPEG's DCT Domain: Exposure Compensation and Multi-Band Contrast
+# Lossless Tonal Adjustments in JPEG's DCT Domain: Exposure Compensation and Multi-Band Contrast
 
 Most JPEG workflows treat exposure (brightness) and contrast as inherently "lossy": decode pixels, apply curves, then re-encode. That approach works, but it always introduces an additional step of quantization error.
 
@@ -15,7 +15,7 @@ Both are applied during transcoding, so they combine naturally with existing `jp
 
 <br />
 
-##### Quick Usage
+## Quick Usage
 
 ```sh
 jpegtran [standard options] [-exposure-comp EV] [-contrast DC LOW MID HIGH] input.jpg output.jpg
@@ -54,7 +54,7 @@ Both switches accept fractional values. Practical ranges:
 
 <br />
 
-##### Integrated into [cPicture](https://bitfabrik.io/cPicture/) with live preview:
+## Integrated into [cPicture](https://bitfabrik.io/cPicture/) with live preview:
 
 <img width="864" height="873" alt="dlg" src="https://github.com/user-attachments/assets/027dd237-3369-4dc4-b816-b80f84406d51" />
 
@@ -64,7 +64,7 @@ Both switches accept fractional values. Practical ranges:
 
 <br />
 
-##### Background: DCT Coefficient Basics
+## Background: DCT Coefficient Basics
 
 A JPEG image is encoded as a grid of DCT blocks (with 8×8 Elements in size). Each block has one **DC coefficient** and 63 **AC coefficients**.  Each MCU might have more than one block depending on the color subsampling.
 
@@ -72,9 +72,9 @@ A JPEG image is encoded as a grid of DCT blocks (with 8×8 Elements in size). Ea
 
   $$\mu = \frac{DC_\text{unquant}}{N} + \text{center}$$
 
-  where $N$ is the DCT block size (typically 8) and $\text{center} = 2^{\text{precision}-1}$ (e.g. 128 for 8‑bit).
+  where $N$ is the DCT block size (typically 8) and $\text{center} = 2^{\text{precision}-1}$ (e.g. 128 for 8-bit).
 
-- **AC[1..N²−1]** represent spatial frequency components (texture, edges, contrast).
+- **AC[1..N²-1]** represent spatial frequency components (texture, edges, contrast).
 
 Both DC and AC are stored **quantized**: the actual stored integer is $\text{round}(\text{value} / Q_k)$, where $Q_k$ is the quantization step for coefficient $k$.
 
@@ -84,7 +84,7 @@ Both DC and AC are stored **quantized**: the actual stored integer is $\text{rou
 
 <br />
 
-##### `-exposure-comp EV` — Exposure Compensation
+## `-exposure-comp EV` — Exposure Compensation
 
 <br />
 
@@ -93,7 +93,7 @@ Exposure compensation from -2EV to +2EV:
 
 <br />
 
-###### Concept
+### Concept
 
 A photographic EV step corresponds to doubling (or halving) the amount of light. Applied in **linear light**:
 
@@ -108,7 +108,7 @@ Because JPEG samples are gamma-coded (sRGB), pixel values cannot be multiplied d
 
 Only DC is modified. AC coefficients are not modified, so local contrast and texture are preserved.
 
-###### Reference Level — Log-Average
+### Reference Level — Log-Average
 
 A geometric mean (log-average) of all block mean levels is used as the exposure reference:
 
@@ -116,7 +116,7 @@ $$\bar{L} = \exp\!\left(\frac{1}{B}\sum_{i=1}^{B} \ln(L_i + 1)\right) - 1$$
 
 where $L_i$ is the intensity mean of block $i$ (clamped to $[0, \text{MAX}]$) and $B$ is the total number of blocks.
 
-###### sRGB Linearisation
+### sRGB Linearisation
 
 The gain is applied in linear light:
 
@@ -140,7 +140,7 @@ $$f_\text{sRGB}(u) = \begin{cases}
   1.055\,u^{1/2.4} - 0.055 & u > 0.0031308
 \end{cases}$$
 
-###### Pixel-Domain Offset → Quantized DC Delta
+### Pixel-Domain Offset ? Quantized DC Delta
 
 $$\Delta_\text{samples} = (u_\text{new} - u_\text{ref}) \cdot \text{MAX}$$
 
@@ -150,7 +150,7 @@ $$\Delta_{DC} = \text{round}\!\left(\frac{\Delta_\text{samples} \cdot N}{Q_0}\ri
 
 where $N$ is the DCT block size and $Q_0$ is the DC quantization step.
 
-###### Component Policy
+### Component Policy
 
 | Color space | Components adjusted |
 |---|---|
@@ -158,7 +158,7 @@ where $N$ is the DCT block size and $Q_0$ is the DC quantization step.
 | RGB/BG_RGB + subtract-green transform | Green/base only (component 1) |
 | CMYK, all others | All components |
 
-For CMYK and YCCK the delta is computed in an inverted intensity domain ($I = \text{MAX} - \text{sample}$) so that +EV brightens and −EV darkens.
+For CMYK and YCCK the delta is computed in an inverted intensity domain ($I = \text{MAX} - \text{sample}$) so that +EV brightens and -EV darkens.
 
 <br />
 
@@ -166,7 +166,7 @@ For CMYK and YCCK the delta is computed in an inverted intensity domain ($I = \t
 
 <br />
 
-##### `-contrast DC LOW MID HIGH` — Contrast Adjustment
+## `-contrast DC LOW MID HIGH` — Contrast Adjustment
 
 <br />
 
@@ -175,7 +175,7 @@ Contrast from -1CV to +1CV:
 
 <br />
 
-###### Concept
+### Concept
 
 This option provides four separate controls (all in stops):
 
@@ -188,7 +188,7 @@ $$g(x) = 2^{x}$$
 
 So +1 doubles, -1 halves.
 
-###### DC
+### DC
 
 DC is scaled by:
 
@@ -198,7 +198,7 @@ and applied as:
 
 $$DC' = \mathrm{clamp}(\mathrm{round}(g_\mathrm{DC} \cdot DC))$$
 
-###### AC (low/mid/high weighting)
+### AC (low/mid/high weighting)
 
 AC coefficients are processed in zigzag order (the JPEG natural order). Let $z$ be the AC position with $z = 1 \ldots A$, where $A$ is the number of AC coefficients.
 
@@ -235,7 +235,7 @@ $$AC'[z] = \mathrm{clamp}(\mathrm{round}(g(z)\cdot AC[z]))$$
 
 If `DC = LOW = MID = HIGH = X`, then all coefficients are scaled by the same gain $2^X$ (uniform contrast adjustment).
 
-###### Component Policy
+### Component Policy
 
 Same as `-exposure-comp`:
 
@@ -247,7 +247,7 @@ Same as `-exposure-comp`:
 
 ---
 
-##### Ordering and Composition
+## Ordering and Composition
 
 Both `-exposure-comp` and `-contrast` are applied as a post step after any geometric transform (`-rot`, `-flip`, `-crop`, …). The tonal operations work on the final output coefficient arrays, so the order of switches on the command line does not matter.
 
@@ -255,7 +255,7 @@ Both `-exposure-comp` and `-contrast` are applied as a post step after any geome
 
 ---
 
-##### Implementation notes
+## Implementation notes
 
 - Core implementation:
   - `transupp.c`: `do_exposure_comp()` and `do_contrast()`
@@ -268,9 +268,10 @@ Both `-exposure-comp` and `-contrast` are applied as a post step after any geome
 
 ---
 
-##### Summary
+## Summary
 
 - `-exposure-comp EV` shifts brightness by changing only DC coefficients, with EV evaluated in linear light (sRGB transfer) at a log-average reference.
 - `-contrast DC LOW MID HIGH` scales DC and AC coefficients, with AC gains varying smoothly over frequency order using low/mid/high controls.
 - Both run in the DCT domain and integrate naturally into the lossless-transformation workflow of `jpegtran`.
+
 
