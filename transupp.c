@@ -1632,15 +1632,14 @@ do_exposure_comp (j_decompress_ptr srcinfo, j_compress_ptr dstinfo,
     if (q0 <= 0)
       continue;
 
-    /* The DC coefficient represents the (scaled) sum/average of the
-     * level-shifted samples over the component's DCT block. For the default
-     * 8x8 DCT, mean(samples) = DC_unquant/8 + center.
+    /* dstinfo->block_size is the DCT block dimension (1..16) common to all
+     * components and defines the stored coefficient structure.
+     * DCT_h/v_scaled_size are per-component pixel output sizes for the decoder
+     * upsampler and are unrelated to the coefficient domain.
+     * The IJG DCT normalisation gives DC_unquant = block_size x mean_levelshifted,
+     * so mean(samples) = DC_quant*Q0/block_size + centerjsample.
      */
-    dctsize = compptr->DCT_h_scaled_size;
-    if (dctsize <= 0)
-      continue;
-    if (compptr->DCT_v_scaled_size != dctsize)
-      continue;
+    dctsize = dstinfo->block_size;
 
     /* Estimate a reference level for this component from the quantized DC
      * coefficients.
@@ -1889,13 +1888,20 @@ do_contrast (j_decompress_ptr srcinfo, j_compress_ptr dstinfo,
     if (!apply_comp)
       continue;
 
-    dctsize = compptr->DCT_h_scaled_size;
-    if (dctsize <= 0)
-      continue;
-    block_coefs = dctsize * compptr->DCT_v_scaled_size;
+    /* dstinfo->block_size is the DCT block dimension (1..16) common to all
+     * components and defines the stored coefficient structure.
+     * DCT_h/v_scaled_size are per-component pixel output sizes for the decoder
+     * upsampler and are unrelated to the coefficient domain.
+     */
+    dctsize = dstinfo->block_size;
+    block_coefs = dctsize * dctsize;
 
     /* Compute the physical DC bounds for this component.
-     * These are the same limits a conforming JPEG encoder imposes by clipping
+     * The IJG DCT normalisation gives DC_unquant = dctsize × mean_levelshifted
+     * for a square dctsize×dctsize block, so the extremes after quantisation are:
+     *   max:  (maxjsample - centerjsample) × dctsize / Q[0]
+     *   min:  -centerjsample × dctsize / Q[0]
+     * These equal the limits a conforming JPEG encoder imposes by clipping
      * sample values to [0..maxjsample] before DCT and quantisation.
      * See do_contrast header comment for the rationale.
      */
