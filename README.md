@@ -72,7 +72,7 @@ A JPEG image is encoded as a grid of DCT blocks (with 8×8 Elements in size). Ea
 
   $$\mu = \frac{DC_\text{unquant}}{N} + \text{center}$$
 
-  where $N$ is the DCT block size (typically 8) and $\text{center} = 2^{\text{precision}-1}$ (e.g. 128 for 8-bit).
+  where $N$ is the DCT block size of 8 and $\text{center} = 2^{\text{precision}-1}$ (e.g. 128 for 8-bit).
 
 - **AC[1..N²-1]** represent spatial frequency components (texture, edges, contrast).
 
@@ -273,6 +273,7 @@ Both `-exposure-comp` and `-contrast` are applied as a post step after any geome
 - `-exposure-comp EV` shifts brightness by changing only DC coefficients, with EV evaluated in linear light (sRGB transfer) at a log-average reference.
 - `-contrast DC LOW MID HIGH` scales DC and AC coefficients, with AC gains varying smoothly over frequency order using low/mid/high controls.
 - Both run in the DCT domain and integrate naturally into the lossless-transformation workflow of `jpegtran`.
+
 
 
 
