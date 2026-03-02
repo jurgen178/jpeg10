@@ -1947,6 +1947,7 @@ do_contrast (j_decompress_ptr srcinfo, j_compress_ptr dstinfo,
             new_val = min_valid_dc;
             dc_saturated = TRUE;
           }
+
           rowptr[blk_x][0] = (JCOEF) new_val;
         }
         /* else: contrast_dc_factor == 1.0, DC unchanged, dc_saturated stays FALSE */
@@ -1996,6 +1997,7 @@ do_contrast (j_decompress_ptr srcinfo, j_compress_ptr dstinfo,
               continue;
 
             scaled = gain * (double) rowptr[blk_x][k];
+
             if (scaled >= 0.0)
               new_val = (long) (scaled + 0.5);
             else
@@ -2004,6 +2006,7 @@ do_contrast (j_decompress_ptr srcinfo, j_compress_ptr dstinfo,
               new_val = max_ac_coef;
             else if (new_val < -max_ac_coef)
               new_val = -max_ac_coef;
+
             rowptr[blk_x][k] = (JCOEF) new_val;
           }
         }
