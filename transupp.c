@@ -1819,6 +1819,18 @@ do_contrast (j_decompress_ptr srcinfo, j_compress_ptr dstinfo,
  *   w_low  = max(0, 1 - 2t),
  *   w_mid  = 1 - |2t - 1|,
  *   w_high = max(0, 2t - 1).
+ *
+ * All weights visualised:
+ *
+ *   w
+ *   1 | L   M   H
+ *     |  \ / \ /
+ * 0.5 |   X   X
+ *     |  / \ / \
+ *   0  -+---+---+--> t
+ *       0  0.5  1
+ *
+ *
  * Then gain is g(z) = 2^(v_low*w_low + v_mid*w_mid + v_high*w_high).
  *
  * Component policy: same as do_exposure_comp.
@@ -1979,12 +1991,39 @@ do_contrast (j_decompress_ptr srcinfo, j_compress_ptr dstinfo,
             else
               t = 0.0;
 
+			/*  Weight curve low:  starts at 1 for low AC, falls linearly to 0 at midfreq, stays 0 for high freq.
+             *   w
+             *   1 | L
+             *     |  \
+             * 0.5 |   \
+             *     |    \
+             *   0  -+---+---+--> t
+             *       0  0.5  1
+             */
             w_low = 1.0 - 2.0 * t;
             if (w_low < 0.0)
               w_low = 0.0;
 
+			/* Weight curve mid:  starts at 0 for low AC, rises linearly to 1 at midfreq, falls linearly to 0 at high freq.
+             *   w
+             *   1 |     M
+             *     |    / \
+             * 0.5 |   /   \
+             *     |  /     \
+             *   0  -+---+---+--> t
+             *       0  0.5  1
+             */
             w_mid = 1.0 - fabs(2.0 * t - 1.0);
 
+            /* Weight curve high: starts at 0 for low AC and midfreq, rises linearly to 1 at high freq.
+			 *   w
+             *   1 |         H
+             *     |        /
+             * 0.5 |       /
+             *     |      /
+             *   0  -+---+---+--> t
+             *       0  0.5  1
+             */
             w_high = 2.0 * t - 1.0;
             if (w_high < 0.0)
               w_high = 0.0;
