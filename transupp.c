@@ -1660,7 +1660,7 @@ do_exposure_comp (j_decompress_ptr srcinfo, j_compress_ptr dstinfo,
         JBLOCKROW rowptr = buffer[0];
         JDIMENSION blk_x;
         for (blk_x = 0; blk_x < compptr->width_in_blocks; blk_x++) {
-          double dc_unquant = (double) rowptr[blk_x][0] * (double) q0;
+          const double dc_unquant = (double) rowptr[blk_x][0] * (double) q0;
           double block_mean = (dc_unquant / (double) dctsize) + (double) centerjsample;
           double intensity_mean;
           if (block_mean < 0.0)
@@ -1697,8 +1697,8 @@ do_exposure_comp (j_decompress_ptr srcinfo, j_compress_ptr dstinfo,
        * sample units.
        */
       {
-        double ref_u = ref_intensity_samples / (double) maxjsample;
-        double ref_lin = srgb_to_linear(ref_u);
+        const double ref_u = ref_intensity_samples / (double) maxjsample;
+        const double ref_lin = srgb_to_linear(ref_u);
         double new_lin = ref_lin * gain;
         double new_u;
         if (new_lin > 1.0)
@@ -1773,7 +1773,7 @@ do_exposure_comp (j_decompress_ptr srcinfo, j_compress_ptr dstinfo,
              */
             {
               int k;
-              int ncoefs = dctsize * dctsize;
+              const int ncoefs = dctsize * dctsize;
               for (k = 1; k < ncoefs; k++)
                 rowptr[blk_x][k] = 0;
             }
@@ -1782,7 +1782,7 @@ do_exposure_comp (j_decompress_ptr srcinfo, j_compress_ptr dstinfo,
             /* Same rationale for the shadow floor: all pixels at 0. */
             {
               int k;
-              int ncoefs = dctsize * dctsize;
+              const int ncoefs = dctsize * dctsize;
               for (k = 1; k < ncoefs; k++)
                 rowptr[blk_x][k] = 0;
             }
@@ -1918,8 +1918,8 @@ do_contrast (j_decompress_ptr srcinfo, j_compress_ptr dstinfo,
      * See do_contrast header comment for the rationale.
      */
     {
-      long maxjsample_c = (1L << precision) - 1L;
-      long centerjsample_c = 1L << (precision - 1);
+      const long maxjsample_c = (1L << precision) - 1L;
+      const long centerjsample_c = 1L << (precision - 1);
       JQUANT_TBL *qtbl_c = dstinfo->quant_tbl_ptrs[compptr->quant_tbl_no];
       long q0_c = (qtbl_c != NULL) ? (long) qtbl_c->quantval[0] : 1L;
       if (q0_c <= 0L) q0_c = 1L;
@@ -1947,7 +1947,7 @@ do_contrast (j_decompress_ptr srcinfo, j_compress_ptr dstinfo,
          * always below the Huffman category limit of 2047.
          */
         if (contrast_dc_factor != 1.0) {
-          double scaled = contrast_dc_factor * (double) rowptr[blk_x][0];
+          const double scaled = contrast_dc_factor * (double) rowptr[blk_x][0];
           if (scaled >= 0.0)
             new_val = (long) (scaled + 0.5);
           else
@@ -1981,17 +1981,12 @@ do_contrast (j_decompress_ptr srcinfo, j_compress_ptr dstinfo,
           int z;
 
           for (z = 1; z <= ac_count; z++) {
-            int k = natural_order[z];
-            double t;
+            const int k = natural_order[z];
+            const double t = (ac_count > 1) ? (double) (z - 1) / (double) (ac_count - 1) : 0.0;
             double w_low, w_mid, w_high;
             double v, gain, scaled;
 
-            if (ac_count > 1)
-              t = (double) (z - 1) / (double) (ac_count - 1);
-            else
-              t = 0.0;
-
-			/*  Weight curve low:  starts at 1 for low AC, falls linearly to 0 at midfreq, stays 0 for high freq.
+            /*  Weight curve low:  starts at 1 for low AC, falls linearly to 0 at midfreq, stays 0 for high freq.
              *   w
              *   1 | L
              *     |  \
@@ -2004,7 +1999,7 @@ do_contrast (j_decompress_ptr srcinfo, j_compress_ptr dstinfo,
             if (w_low < 0.0)
               w_low = 0.0;
 
-			/* Weight curve mid:  starts at 0 for low AC, rises linearly to 1 at midfreq, falls linearly to 0 at high freq.
+            /* Weight curve mid:  starts at 0 for low AC, rises linearly to 1 at midfreq, falls linearly to 0 at high freq.
              *   w
              *   1 |     M
              *     |    / \
@@ -2016,7 +2011,7 @@ do_contrast (j_decompress_ptr srcinfo, j_compress_ptr dstinfo,
             w_mid = 1.0 - fabs(2.0 * t - 1.0);
 
             /* Weight curve high: starts at 0 for low AC and midfreq, rises linearly to 1 at high freq.
-			 *   w
+             *   w
              *   1 |         H
              *     |        /
              * 0.5 |       /
