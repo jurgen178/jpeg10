@@ -1613,6 +1613,9 @@ do_exposure_comp (j_decompress_ptr srcinfo, j_compress_ptr dstinfo,
       apply_comp = TRUE;
     }
 
+    if (!apply_comp)
+      continue;
+
     /* CMYK is subtractive (more ink = darker). Adobe-style YCCK is also
      * effectively inverted with respect to displayed exposure (see
      * ycck_cmyk_convert uses MAX - (y + ...)). To make +EV brighten and -EV
@@ -1621,9 +1624,6 @@ do_exposure_comp (j_decompress_ptr srcinfo, j_compress_ptr dstinfo,
      */
     intensity_domain = (srcinfo->jpeg_color_space == JCS_CMYK ||
                         srcinfo->jpeg_color_space == JCS_YCCK);
-
-    if (!apply_comp)
-      continue;
 
     qtbl = dstinfo->quant_tbl_ptrs[compptr->quant_tbl_no];
     if (qtbl == NULL)
