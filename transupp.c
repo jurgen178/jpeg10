@@ -1527,6 +1527,7 @@ do_transverse (j_decompress_ptr srcinfo, j_compress_ptr dstinfo,
 }
 
 LOCAL(double)
+/* Convert a gamma-encoded sRGB sample in [0,1] to linear light. */
 srgb_to_linear (double u)
 {
   if (u <= 0.04045)
@@ -1535,6 +1536,7 @@ srgb_to_linear (double u)
 }
 
 LOCAL(double)
+/* Convert a linear-light sample in [0,1] back to gamma-encoded sRGB. */
 linear_to_srgb (double u)
 {
   if (u <= 0.0031308)

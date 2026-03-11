@@ -186,7 +186,6 @@ typedef struct {
   int iMCU_sample_height;
 } jpeg_transform_info;
 
-
 #if TRANSFORMS_SUPPORTED
 
 /* Parse a crop specification (written in X11 geometry style) */
