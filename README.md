@@ -274,6 +274,10 @@ Both `-exposure-comp` and `-contrast` are applied as a post step after any geome
 - `-contrast DC LOW MID HIGH` scales DC and AC coefficients, with AC gains varying smoothly over frequency order using low/mid/high controls.
 - Both run in the DCT domain and integrate naturally into the lossless-transformation workflow of `jpegtran`.
 
+---
+
+[Example pictures](https://bitfabrik.io/blog/index.php?id=271)
+
 
 
 
