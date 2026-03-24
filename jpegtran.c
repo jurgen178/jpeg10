@@ -67,12 +67,20 @@ usage (void)
   fprintf(stderr, "Switches for modifying the image:\n");
 #if TRANSFORMS_SUPPORTED
   fprintf(stderr, "  -crop WxH+X+Y  Crop to a rectangular subarea\n");
+  fprintf(stderr, "  -expand-color R,G,B  Fill expanded area with RGB color (0..255 each)\n");
   fprintf(stderr, "  -drop +X+Y filename          Drop another image\n");
   fprintf(stderr, "  -flip [horizontal|vertical]  Mirror image (left-right or top-bottom)\n");
   fprintf(stderr, "  -grayscale     Reduce to grayscale (omit color data)\n");
   fprintf(stderr, "  -negate        Negate image (invert component data)\n");
   fprintf(stderr, "  -exposure-comp EV            Adjust exposure by EV stops (DC shift, sRGB-linearised)\n");
   fprintf(stderr, "  -contrast DC LOW MID HIGH    Set contrast controls for DC/low/mid/high AC\n");
+  fprintf(stderr, "  -requant-look S              Requantize AC for retro/compressed look (S>=0)\n");
+  fprintf(stderr, "  -sparsify T                  Zero small AC coefficients: abs(AC)<=T\n");
+  fprintf(stderr, "  -band-stop L H A             Attenuate AC inside [L..H] by amount A (0..1)\n");
+  fprintf(stderr, "  -band-pass L H A             Attenuate AC outside [L..H] by amount A (0..1)\n");
+  fprintf(stderr, "  -filmgrain G                 Add deterministic pseudo film grain in AC (G>=0)\n");
+  fprintf(stderr, "  -dct-mosaic M S              DCT Mosaic: AC blend M (0..1, max ~90%%), group size S (0..32), 0=off\n");
+  fprintf(stderr, "  -dct-focus A B               DCT Focus: amount A (0..1), bias B (-1..1 low..high)\n");
   fprintf(stderr, "  -perfect       Fail if there is non-transformable edge blocks\n");
   fprintf(stderr, "  -rotate [90|180|270]         Rotate image (degrees clockwise)\n");
 #endif
@@ -150,6 +158,10 @@ parse_switches (j_compress_ptr cinfo, int argc, char **argv,
   transformoption.trim = FALSE;
   transformoption.force_grayscale = FALSE;
   transformoption.crop = FALSE;
+  transformoption.expand_color = FALSE;
+  transformoption.expand_color_r = 0;
+  transformoption.expand_color_g = 0;
+  transformoption.expand_color_b = 0;
   transformoption.exposure_comp = FALSE;
   transformoption.exposure_comp_ev = 0.0;
   transformoption.contrast_adj = FALSE;
@@ -157,6 +169,24 @@ parse_switches (j_compress_ptr cinfo, int argc, char **argv,
   transformoption.contrast_low = 0.0;
   transformoption.contrast_mid = 0.0;
   transformoption.contrast_high = 0.0;
+  transformoption.requant_look = FALSE;
+  transformoption.requant_strength = 0.0;
+  transformoption.sparsify = FALSE;
+  transformoption.sparsify_threshold = 0L;
+  transformoption.band_stop = FALSE;
+  transformoption.band_stop_low = 0.0;
+  transformoption.band_stop_high = 1.0;
+  transformoption.band_stop_atten = 0.0;
+  transformoption.band_pass = FALSE;
+  transformoption.band_pass_low = 0.0;
+  transformoption.band_pass_high = 1.0;
+  transformoption.band_pass_atten = 0.0;
+  transformoption.filmgrain = FALSE;
+  transformoption.filmgrain_amount = 0.0;
+  transformoption.dct_mosaic_amount = 0.0;
+  transformoption.dct_mosaic_size = 0.0;
+  transformoption.dct_focus_amount = 0.0;
+  transformoption.dct_focus_bias = 0.0;
   cinfo->err->trace_level = 0;
 
   /* Scan command line options, adjust parameters */
@@ -230,6 +260,28 @@ parse_switches (j_compress_ptr cinfo, int argc, char **argv,
 #else
       select_transform(JXFORM_NONE);	/* force an error */
 #endif
+
+        } else if (keymatch(arg, "expand-color", 8)) {
+    #if TRANSFORMS_SUPPORTED
+      int rval, gval, bval;
+      if (++argn >= argc)	/* advance to next argument */
+    	usage();
+      if (transformoption.expand_color ||
+    	  sscanf(argv[argn], "%d,%d,%d", &rval, &gval, &bval) != 3 ||
+    	  rval < 0 || rval > 255 ||
+    	  gval < 0 || gval > 255 ||
+    	  bval < 0 || bval > 255) {
+    	fprintf(stderr, "%s: bogus -expand-color argument '%s'\n",
+    		progname, argv[argn]);
+    	exit(EXIT_FAILURE);
+      }
+      transformoption.expand_color = TRUE;
+      transformoption.expand_color_r = rval;
+      transformoption.expand_color_g = gval;
+      transformoption.expand_color_b = bval;
+    #else
+      select_transform(JXFORM_NONE);	/* force an error */
+    #endif
 
     } else if (keymatch(arg, "debug", 1) || keymatch(arg, "verbose", 1)) {
       /* Enable debug printouts. */
@@ -312,6 +364,139 @@ parse_switches (j_compress_ptr cinfo, int argc, char **argv,
 #else
       select_transform(JXFORM_NONE);	/* force an error */
 #endif
+
+        } else if (keymatch(arg, "requant-look", 8)) {
+    #if TRANSFORMS_SUPPORTED
+      double sval;
+      if (++argn >= argc)	/* advance to next argument */
+    	usage();
+      if (sscanf(argv[argn], "%lf", &sval) != 1 || sval < 0.0)
+    	usage();
+      transformoption.requant_look = TRUE;
+      transformoption.requant_strength = sval;
+    #else
+      select_transform(JXFORM_NONE);	/* force an error */
+    #endif
+
+        } else if (keymatch(arg, "sparsify", 5)) {
+    #if TRANSFORMS_SUPPORTED
+      long tval;
+      if (++argn >= argc)	/* advance to next argument */
+    	usage();
+      if (sscanf(argv[argn], "%ld", &tval) != 1 || tval < 0)
+    	usage();
+      transformoption.sparsify = TRUE;
+      transformoption.sparsify_threshold = tval;
+    #else
+      select_transform(JXFORM_NONE);	/* force an error */
+    #endif
+
+        } else if (keymatch(arg, "band-stop", 6)) {
+    #if TRANSFORMS_SUPPORTED
+      double low, high, atten;
+      if (++argn >= argc)	/* advance to next argument */
+    	usage();
+      if (sscanf(argv[argn], "%lf", &low) != 1)
+    	usage();
+      if (++argn >= argc)	/* advance to next argument */
+    	usage();
+      if (sscanf(argv[argn], "%lf", &high) != 1)
+    	usage();
+      if (++argn >= argc)	/* advance to next argument */
+    	usage();
+      if (sscanf(argv[argn], "%lf", &atten) != 1)
+    	usage();
+      if (low < 0.0 || low > 1.0 || high < 0.0 || high > 1.0 ||
+    	  low > high || atten < 0.0 || atten > 1.0)
+    	usage();
+      transformoption.band_stop = TRUE;
+      transformoption.band_stop_low = low;
+      transformoption.band_stop_high = high;
+      transformoption.band_stop_atten = atten;
+    #else
+      select_transform(JXFORM_NONE);	/* force an error */
+    #endif
+
+        } else if (keymatch(arg, "band-pass", 6)) {
+    #if TRANSFORMS_SUPPORTED
+      double low, high, atten;
+      if (++argn >= argc)	/* advance to next argument */
+    	usage();
+      if (sscanf(argv[argn], "%lf", &low) != 1)
+    	usage();
+      if (++argn >= argc)	/* advance to next argument */
+    	usage();
+      if (sscanf(argv[argn], "%lf", &high) != 1)
+    	usage();
+      if (++argn >= argc)	/* advance to next argument */
+    	usage();
+      if (sscanf(argv[argn], "%lf", &atten) != 1)
+    	usage();
+      if (low < 0.0 || low > 1.0 || high < 0.0 || high > 1.0 ||
+    	  low > high || atten < 0.0 || atten > 1.0)
+    	usage();
+      transformoption.band_pass = TRUE;
+      transformoption.band_pass_low = low;
+      transformoption.band_pass_high = high;
+      transformoption.band_pass_atten = atten;
+    #else
+      select_transform(JXFORM_NONE);	/* force an error */
+    #endif
+
+        } else if (keymatch(arg, "filmgrain", 5)) {
+    #if TRANSFORMS_SUPPORTED
+      double gval;
+      if (++argn >= argc)	/* advance to next argument */
+	usage();
+      if (sscanf(argv[argn], "%lf", &gval) != 1 || gval < 0.0)
+	usage();
+      transformoption.filmgrain = TRUE;
+      transformoption.filmgrain_amount = gval;
+    #else
+      select_transform(JXFORM_NONE);	/* force an error */
+    #endif
+
+        } else if (keymatch(arg, "dct-mosaic", 4)) {
+        #if TRANSFORMS_SUPPORTED
+      double mval;
+      int sval;
+      if (++argn >= argc)	/* advance to next argument */
+    	usage();
+      if (sscanf(argv[argn], "%lf", &mval) != 1)
+    	usage();
+      if (++argn >= argc)	/* advance to next argument */
+    	usage();
+      if (sscanf(argv[argn], "%d", &sval) != 1)
+    	usage();
+
+      if (mval < 0.0 || mval > 1.0 || sval < 0 || sval > 32)
+    	usage();
+      transformoption.dct_mosaic_amount = mval;
+      transformoption.dct_mosaic_size = (double) sval;
+        #else
+      select_transform(JXFORM_NONE);	/* force an error */
+        #endif
+
+        } else if (keymatch(arg, "dct-focus", 4)) {
+        #if TRANSFORMS_SUPPORTED
+      double aval;
+      double bval;
+      if (++argn >= argc)	/* advance to next argument */
+    	usage();
+      if (sscanf(argv[argn], "%lf", &aval) != 1)
+    	usage();
+      if (++argn >= argc)	/* advance to next argument */
+    	usage();
+      if (sscanf(argv[argn], "%lf", &bval) != 1)
+    	usage();
+
+      if (aval < 0.0 || aval > 1.0 || bval < -1.0 || bval > 1.0)
+    	usage();
+      transformoption.dct_focus_amount = aval;
+      transformoption.dct_focus_bias = bval;
+        #else
+      select_transform(JXFORM_NONE);	/* force an error */
+        #endif
 
     } else if (keymatch(arg, "maxmemory", 3)) {
       /* Maximum memory in Kb (or Mb with 'm'). */

@@ -18,6 +18,24 @@ jpegtran \- lossless transformation of JPEG files
 .I HIGH
 ]
 [
+.BI \-requant-look " S"
+]
+[
+.BI \-sparsify " T"
+]
+[
+.BI \-band-stop " L H A"
+]
+[
+.BI \-band-pass " L H A"
+]
+[
+.BI \-filmgrain " G"
+]
+[
+.BI \-dct-mosaic " M S"
+]
+[
 .I filename
 ]
 .LP
@@ -32,8 +50,10 @@ from landscape to portrait format by rotation.
 .PP
 In addition to geometric transforms, jpegtran can apply tonal adjustments in
 the DCT domain without full image decode/re-encode, such as DC-only exposure
-compensation (\-exposure\-comp) and multi-band contrast adjustment
-(\-contrast).
+compensation (\-exposure\-comp), multi-band contrast adjustment
+(\-contrast), and optional artistic AC-domain effects
+(\-requant\-look, \-sparsify, \-band\-stop, \-band\-pass,
+\-filmgrain, \-block\-weave).
 .PP
 For EXIF files and JPEG files containing Exif data, you may prefer to use
 .B exiftran
@@ -271,6 +291,55 @@ The same component policy as
 applies: for YCbCr, BG_YCC and YCCK images only the luminance component is
 scaled; for RGB/BG_RGB images with subtract-green transform only the green
 component is scaled; otherwise all components are scaled.
+.TP
+.BI \-requant-look " S"
+Apply a frequency-dependent AC requantization look, where S >= 0 controls
+strength.
+.IP
+Higher frequencies are rounded to coarser steps than lower frequencies,
+producing a stylized retro/compressed texture while remaining in the DCT
+domain (no full decode/re-encode).
+.TP
+.BI \-sparsify " T"
+Zero out small AC coefficients using a hard threshold: abs(AC) <= T.
+.IP
+This removes weak texture/noise and can create a cleaner, more graphic look.
+T is a non-negative integer in quantized coefficient units.
+.TP
+.BI \-band-stop " L H A"
+Attenuate AC coefficients inside the normalized zigzag frequency band
+[L..H] by amount A, where L and H are in [0,1], L <= H, and A is in [0,1].
+.IP
+A = 0 leaves the band unchanged; A = 1 fully notches it out.
+.TP
+.BI \-band-pass " L H A"
+Attenuate AC coefficients outside the normalized zigzag frequency band
+[L..H] by amount A, with the same parameter ranges as
+.BR \-band-stop .
+.TP
+.BI \-filmgrain " G"
+Add deterministic pseudo film grain in the AC domain, with strength G >= 0.
+.IP
+The grain is biased toward mid/high frequencies to emulate film-like texture
+without strong low-frequency blotches.  Because the grain is deterministic per
+block and coefficient, repeated runs with the same input and parameters produce
+the same result.
+.TP
+.BI \-dct-mosaic " M S"
+Apply DCT Mosaic in the DCT domain, where M is the AC blend amount in [0,1]
+and S is the block-group size in [0,32].
+.IP
+The effect organizes coefficients into repeating SxS block groups,
+unifies DC per group, and blends AC per block by alpha = 0.9 * M.
+M=0 keeps fully flattened AC; M=1 restores about 90% AC detail.
+.TP
+.BI \-dct-focus " A B"
+Apply DCT Focus in the DCT domain, where A is amount in [0,1]
+and B is bias in [-1,1] (negative = low frequencies, positive = high frequencies).
+.IP
+The effect multiplicatively shapes AC coefficients by a smooth frequency profile.
+It is useful for testing frequency-selective texture and edge emphasis without
+changing the core transform pipeline.
 .TP
 .B \-grayscale
 Force grayscale output.

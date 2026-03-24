@@ -389,11 +389,184 @@ do_crop (j_decompress_ptr srcinfo, j_compress_ptr dstinfo,
 }
 
 
+LOCAL(int)
+clamp_u8 (int val)
+{
+  if (val < 0)
+    return 0;
+  if (val > 255)
+    return 255;
+  return val;
+}
+
+
+LOCAL(int)
+scale_u8_to_precision (int val_u8, long maxjsample)
+{
+  return (int) (((long) val_u8 * maxjsample + 127L) / 255L);
+}
+
+
+LOCAL(int)
+expand_color_component_sample (j_decompress_ptr srcinfo, int ci,
+			       int red_u8, int green_u8, int blue_u8,
+			       long maxjsample)
+{
+  int sample_u8;
+  int r, g, b;
+  int y_u8, cb_u8, cr_u8;
+  double y_d, cb_d, cr_d;
+
+  r = clamp_u8(red_u8);
+  g = clamp_u8(green_u8);
+  b = clamp_u8(blue_u8);
+
+  switch (srcinfo->jpeg_color_space) {
+  case JCS_GRAYSCALE:
+    /* Luminance from RGB */
+    y_d = 0.29900 * r + 0.58700 * g + 0.11400 * b;
+    sample_u8 = clamp_u8((int) (y_d + 0.5));
+    break;
+  case JCS_RGB:
+    if (srcinfo->color_transform == JCT_SUBTRACT_GREEN) {
+      /* Lossless: encoder stores [R-G+128, G, B-G+128] via rgb_rgb1_convert.
+       * We must produce the same pre-transformed values so the decoder's
+       * rgb1_rgb_convert (R=(ch0+G-128), G=ch1, B=(ch2+G-128)) inverts
+       * them correctly back to the desired fill colour. */
+      sample_u8 = (ci == 0) ? ((r - g + 128) & 255) :
+		  (ci == 1) ? g :
+			      ((b - g + 128) & 255);
+    } else {
+      sample_u8 = (ci == 0) ? r : (ci == 1) ? g : b;
+    }
+    break;
+  case JCS_BG_RGB:
+    /* BGR channel order */
+    if (srcinfo->color_transform == JCT_SUBTRACT_GREEN) {
+      /* Same JCT_SUBTRACT_GREEN transform applies; channel 1 is always G. */
+      sample_u8 = (ci == 0) ? ((r - g + 128) & 255) :
+		  (ci == 1) ? g :
+			      ((b - g + 128) & 255);
+    } else {
+      sample_u8 = (ci == 0) ? b : (ci == 1) ? g : r;
+    }
+    break;
+  case JCS_YCbCr:
+  case JCS_BG_YCC:
+    /* Convert RGB -> YCbCr */
+    y_d  = 0.29900 * r + 0.58700 * g + 0.11400 * b;
+    cb_d = 128.0 - 0.16874 * r - 0.33126 * g + 0.50000 * b;
+    cr_d = 128.0 + 0.50000 * r - 0.41869 * g - 0.08131 * b;
+    y_u8  = clamp_u8((int) (y_d  + 0.5));
+    cb_u8 = clamp_u8((int) (cb_d + 0.5));
+    cr_u8 = clamp_u8((int) (cr_d + 0.5));
+    sample_u8 = (ci == 0) ? y_u8 : (ci == 1) ? cb_u8 : cr_u8;
+    break;
+  case JCS_CMYK:
+    /* CMYK: C=255-R, M=255-G, Y=255-B, K=0 (no black ink) */
+    sample_u8 = (ci == 0) ? (255 - r) :
+		(ci == 1) ? (255 - g) :
+		(ci == 2) ? (255 - b) : 0;
+    break;
+  case JCS_YCCK:
+    /* YCCK (Adobe-style): CMY channels (C=255-R, M=255-G, Y=255-B) are encoded
+     * as YCbCr by the encoder using the inverted RGB values.  The decoder
+     * outputs CMYK where C_out=255-R_ycbcr, and cPicture renders as
+     * R_display = C_out * K / 255.  Therefore K must be 255 (= no black ink
+     * in Adobe convention) so that the fill colour is not forced to black. */
+    {
+      int c = 255 - r, m = 255 - g, yi = 255 - b;
+      y_d  = 0.29900 * c + 0.58700 * m + 0.11400 * yi;
+      cb_d = 128.0 - 0.16874 * c - 0.33126 * m + 0.50000 * yi;
+      cr_d = 128.0 + 0.50000 * c - 0.41869 * m - 0.08131 * yi;
+      y_u8  = clamp_u8((int) (y_d  + 0.5));
+      cb_u8 = clamp_u8((int) (cb_d + 0.5));
+      cr_u8 = clamp_u8((int) (cr_d + 0.5));
+      sample_u8 = (ci == 0) ? y_u8 : (ci == 1) ? cb_u8 : (ci == 2) ? cr_u8 : 255;
+    }
+    break;
+  default:
+    y_d  = 0.29900 * r + 0.58700 * g + 0.11400 * b;
+    cb_d = 128.0 - 0.16874 * r - 0.33126 * g + 0.50000 * b;
+    cr_d = 128.0 + 0.50000 * r - 0.41869 * g - 0.08131 * b;
+    y_u8  = clamp_u8((int) (y_d  + 0.5));
+    cb_u8 = clamp_u8((int) (cb_d + 0.5));
+    cr_u8 = clamp_u8((int) (cr_d + 0.5));
+    sample_u8 = (ci == 0) ? y_u8 : 128;
+    break;
+  }
+
+  return scale_u8_to_precision(sample_u8, maxjsample);
+}
+
+
+LOCAL(JCOEF)
+expand_color_dc_coef (j_compress_ptr dstinfo, jpeg_component_info *compptr,
+		      int sample)
+{
+  JQUANT_TBL *qtbl;
+  int precision;
+  int dctsize;
+  long centerjsample;
+  long q0;
+  long numerator;
+  double dc_d;
+  long dc;
+
+  precision = dstinfo->data_precision;
+  if (precision <= 0 || precision > 16)
+    precision = BITS_IN_JSAMPLE;
+  centerjsample = 1L << (precision - 1);
+
+  dctsize = dstinfo->block_size;
+  if (dctsize <= 0)
+    dctsize = DCTSIZE;
+
+  /* For lossless JPEG (block_size == 1), jpeg_idct_1x1 still dequantizes with
+   * the quantization table and applies the same final descale as the 8x8 IDCT
+   * (right-shift by PASS2_BITS - PASS1_BITS = 3 for 8-bit).  The effective
+   * block size for the coefficient formula is therefore DCTSIZE (8), not 1. */
+  if (dctsize == 1)
+    dctsize = DCTSIZE;
+
+  qtbl = dstinfo->quant_tbl_ptrs[compptr->quant_tbl_no];
+  q0 = (qtbl != NULL && qtbl->quantval[0] > 0) ? (long) qtbl->quantval[0] : 1L;
+
+  numerator = ((long) sample - centerjsample) * (long) dctsize;
+  dc_d = (double) numerator / (double) q0;
+  if (dc_d >= 0.0)
+    dc = (long) (dc_d + 0.5);
+  else
+    dc = (long) (dc_d - 0.5);
+
+  if (dc > 32767L)
+    dc = 32767L;
+  else if (dc < -32768L)
+    dc = -32768L;
+
+  return (JCOEF) dc;
+}
+
+
+LOCAL(void)
+fill_block_row (JBLOCKROW row_ptr, JDIMENSION first_blk, JDIMENSION block_count,
+		JCOEF dc)
+{
+  JDIMENSION dst_blk_x;
+
+  for (dst_blk_x = 0; dst_blk_x < block_count; dst_blk_x++) {
+    FMEMZERO(row_ptr[first_blk + dst_blk_x], SIZEOF(JBLOCK));
+    row_ptr[first_blk + dst_blk_x][0] = dc;
+  }
+}
+
+
 LOCAL(void)
 do_crop_ext_zero (j_decompress_ptr srcinfo, j_compress_ptr dstinfo,
 		  JDIMENSION x_crop_offset, JDIMENSION y_crop_offset,
 		  jvirt_barray_ptr *src_coef_arrays,
-		  jvirt_barray_ptr *dst_coef_arrays)
+		  jvirt_barray_ptr *dst_coef_arrays,
+		  jpeg_transform_info *info)
 /* Crop.  This is only used when no rotate/flip is requested with the crop.
  * Extension: If the destination size is larger than the source, we fill in
  * the extra area with zero (neutral gray).  Note we also have to zero partial
@@ -402,7 +575,11 @@ do_crop_ext_zero (j_decompress_ptr srcinfo, j_compress_ptr dstinfo,
 {
   JDIMENSION MCU_cols, MCU_rows, comp_width, comp_height;
   JDIMENSION dst_blk_y, x_crop_blocks, y_crop_blocks;
+  long maxjsample;
   int ci, offset_y;
+  int precision;
+  int sample;
+  JCOEF fill_dc;
   JBLOCKARRAY src_buffer, dst_buffer;
   jpeg_component_info *compptr;
 
@@ -411,8 +588,23 @@ do_crop_ext_zero (j_decompress_ptr srcinfo, j_compress_ptr dstinfo,
   MCU_rows = srcinfo->output_height /
     (dstinfo->max_v_samp_factor * dstinfo->min_DCT_v_scaled_size);
 
+  precision = dstinfo->data_precision;
+  if (precision <= 0 || precision > 16)
+    precision = BITS_IN_JSAMPLE;
+  maxjsample = (1L << precision) - 1L;
+
   for (ci = 0; ci < dstinfo->num_components; ci++) {
     compptr = dstinfo->comp_info + ci;
+    if (info->expand_color) {
+      sample = expand_color_component_sample(srcinfo, ci,
+		info->expand_color_r,
+		info->expand_color_g,
+		info->expand_color_b,
+		maxjsample);
+      fill_dc = expand_color_dc_coef(dstinfo, compptr, sample);
+    } else
+      fill_dc = 0;
+
     comp_width = MCU_cols * compptr->h_samp_factor;
     comp_height = MCU_rows * compptr->v_samp_factor;
     x_crop_blocks = x_crop_offset * compptr->h_samp_factor;
@@ -426,8 +618,8 @@ do_crop_ext_zero (j_decompress_ptr srcinfo, j_compress_ptr dstinfo,
 	if (dst_blk_y < y_crop_blocks ||
 	    dst_blk_y >= y_crop_blocks + comp_height) {
 	  for (offset_y = 0; offset_y < compptr->v_samp_factor; offset_y++) {
-	    FMEMZERO(dst_buffer[offset_y],
-		     compptr->width_in_blocks * SIZEOF(JBLOCK));
+      fill_block_row(dst_buffer[offset_y], 0,
+         compptr->width_in_blocks, fill_dc);
 	  }
 	  continue;
 	}
@@ -444,17 +636,18 @@ do_crop_ext_zero (j_decompress_ptr srcinfo, j_compress_ptr dstinfo,
       for (offset_y = 0; offset_y < compptr->v_samp_factor; offset_y++) {
 	if (dstinfo->jpeg_width > srcinfo->output_width) {
 	  if (x_crop_blocks > 0) {
-	    FMEMZERO(dst_buffer[offset_y],
-		     x_crop_blocks * SIZEOF(JBLOCK));
+      fill_block_row(dst_buffer[offset_y], 0,
+         x_crop_blocks, fill_dc);
 	  }
 	  jcopy_block_row(src_buffer[offset_y],
 			  dst_buffer[offset_y] + x_crop_blocks,
 			  comp_width);
 	  if (compptr->width_in_blocks > x_crop_blocks + comp_width) {
-	    FMEMZERO(dst_buffer[offset_y] +
-		       x_crop_blocks + comp_width,
-		     (compptr->width_in_blocks -
-		       x_crop_blocks - comp_width) * SIZEOF(JBLOCK));
+      fill_block_row(dst_buffer[offset_y],
+         x_crop_blocks + comp_width,
+         compptr->width_in_blocks -
+         x_crop_blocks - comp_width,
+         fill_dc);
 	  }
 	} else {
 	  jcopy_block_row(src_buffer[offset_y] + x_crop_blocks,
@@ -1544,6 +1737,281 @@ linear_to_srgb (double u)
   return 1.055 * pow(u, 1.0 / 2.4) - 0.055;
 }
 
+/* Helper: decode a lossless (block_size==1) DC coefficient back to the
+ * unsigned sample value it represents, using the same normalization that
+ * jpeg_idct_1x1 uses (right-shift by DCTSIZE = 8 for the final descale).
+ *   sample = DC * Q0 / DCTSIZE + centerjsample
+ */
+#define LOSSLESS_DC_TO_SAMPLE(dc, q0, centerjsample) \
+  ((long)(dc) * (long)(q0) / (long)DCTSIZE + (centerjsample))
+
+/* Helper: encode a sample value back to a lossless DC coefficient. */
+#define LOSSLESS_SAMPLE_TO_DC(sample, q0, centerjsample) \
+  (((long)(sample) - (centerjsample)) * (long)DCTSIZE / (long)(q0))
+
+LOCAL(void)
+do_exposure_lossless_rgb1 (j_decompress_ptr srcinfo, j_compress_ptr dstinfo,
+			   jvirt_barray_ptr *coef_arrays,
+			   jpeg_transform_info *info)
+/* Exposure compensation for lossless JPEG (block_size==1) with
+ * JCT_SUBTRACT_GREEN (RGB1 colour transform).  Stored channels:
+ *   ch0 = (R-G+centerjsample) mod 2^P
+ *   ch1 = G
+ *   ch2 = (B-G+centerjsample) mod 2^P
+ * (same encoding for both JCS_RGB and JCS_BG_RGB with subtract-green).
+ *
+ * Because the channel encoding uses 8-bit modular arithmetic, adjusting
+ * only G (the usual strategy for non-lossless DCT JPEG) causes colour
+ * artefacts whenever |R-G| or |B-G| exceeds centerjsample.  The correct
+ * approach is to decode each pixel to R,G,B, apply the neutral exposure
+ * shift in pixel space, and re-encode with the subtract-green transform.
+ */
+{
+  int precision;
+  long centerjsample, maxjsample;
+  double gain;
+  long delta_samples;
+  jpeg_component_info *comp1;
+  long q0, q1, q2;
+  JDIMENSION blk_y, blk_x;
+
+  if (!info->exposure_comp || info->exposure_comp_ev == 0.0)
+    return;
+
+  if (srcinfo->num_components < 3)
+    return;
+
+  precision = dstinfo->data_precision;
+  if (precision <= 0 || precision > 16)
+    return;
+
+  centerjsample = 1L << (precision - 1);
+  maxjsample    = (1L << precision) - 1L;
+
+  gain = pow(2.0, info->exposure_comp_ev);
+  if (gain == 1.0)
+    return;
+
+  /* Q values for each channel. */
+  {
+    JQUANT_TBL *t0 = dstinfo->quant_tbl_ptrs[dstinfo->comp_info[0].quant_tbl_no];
+    JQUANT_TBL *t1 = dstinfo->quant_tbl_ptrs[dstinfo->comp_info[1].quant_tbl_no];
+    JQUANT_TBL *t2 = dstinfo->quant_tbl_ptrs[dstinfo->comp_info[2].quant_tbl_no];
+    q0 = (t0 && t0->quantval[0] > 0) ? (long)t0->quantval[0] : 1L;
+    q1 = (t1 && t1->quantval[0] > 0) ? (long)t1->quantval[0] : 1L;
+    q2 = (t2 && t2->quantval[0] > 0) ? (long)t2->quantval[0] : 1L;
+  }
+  comp1 = dstinfo->comp_info + 1;
+
+  /* Compute reference level from the G channel (log-average of pixel
+   * levels), then derive delta_samples in sRGB-linearised space. */
+  {
+    double sum_log = 0.0;
+    long long block_count = 0;
+    double ref_samples, delta_d;
+
+    for (blk_y = 0; blk_y < comp1->height_in_blocks; blk_y++) {
+      JBLOCKARRAY buf1 = (*srcinfo->mem->access_virt_barray)
+        ((j_common_ptr) srcinfo, coef_arrays[1], blk_y, (JDIMENSION) 1, FALSE);
+      JBLOCKROW row1 = buf1[0];
+      for (blk_x = 0; blk_x < comp1->width_in_blocks; blk_x++) {
+        double sG = (double) LOSSLESS_DC_TO_SAMPLE(row1[blk_x][0], q1, centerjsample);
+        if (sG < 0.0) sG = 0.0;
+        else if (sG > (double) maxjsample) sG = (double) maxjsample;
+        sum_log += log(sG + 1.0);
+        block_count++;
+      }
+    }
+    if (block_count <= 0)
+      return;
+
+    ref_samples = exp(sum_log / (double) block_count) - 1.0;
+    if (ref_samples < 0.0) ref_samples = 0.0;
+    else if (ref_samples > (double) maxjsample) ref_samples = (double) maxjsample;
+
+    {
+      const double ref_u   = ref_samples / (double) maxjsample;
+      const double ref_lin = srgb_to_linear(ref_u);
+      double new_lin = ref_lin * gain;
+      double new_u;
+      if (new_lin > 1.0) new_lin = 1.0;
+      else if (new_lin < 0.0) new_lin = 0.0;
+      new_u = linear_to_srgb(new_lin);
+      if (new_u > 1.0) new_u = 1.0;
+      else if (new_u < 0.0) new_u = 0.0;
+      delta_d = (new_u - ref_u) * (double) maxjsample;
+    }
+
+    /* Clamp delta to available headroom / shadow room. */
+    if (delta_d > (double) maxjsample - ref_samples)
+      delta_d = (double) maxjsample - ref_samples;
+    else if (delta_d < -ref_samples)
+      delta_d = -ref_samples;
+
+    delta_samples = (delta_d >= 0.0) ? (long)(delta_d + 0.5)
+                                     : (long)(delta_d - 0.5);
+  }
+
+  if (delta_samples == 0)
+    return;
+
+  /* Per-pixel: decode to RGB, shift, re-encode. */
+  for (blk_y = 0; blk_y < comp1->height_in_blocks; blk_y++) {
+    JBLOCKARRAY buf0 = (*srcinfo->mem->access_virt_barray)
+      ((j_common_ptr) srcinfo, coef_arrays[0], blk_y, (JDIMENSION) 1, TRUE);
+    JBLOCKARRAY buf1 = (*srcinfo->mem->access_virt_barray)
+      ((j_common_ptr) srcinfo, coef_arrays[1], blk_y, (JDIMENSION) 1, TRUE);
+    JBLOCKARRAY buf2 = (*srcinfo->mem->access_virt_barray)
+      ((j_common_ptr) srcinfo, coef_arrays[2], blk_y, (JDIMENSION) 1, TRUE);
+
+    for (blk_x = 0; blk_x < comp1->width_in_blocks; blk_x++) {
+      /* Decode stored difference + G samples. */
+      long sDiff0 = LOSSLESS_DC_TO_SAMPLE(buf0[0][blk_x][0], q0, centerjsample);
+      long sG     = LOSSLESS_DC_TO_SAMPLE(buf1[0][blk_x][0], q1, centerjsample);
+      long sDiff2 = LOSSLESS_DC_TO_SAMPLE(buf2[0][blk_x][0], q2, centerjsample);
+      long R, G, B, dc;
+
+      /* Reconstruct RGB via modular inverse of subtract-green:
+       *   R = (sDiff0 + G - centerjsample) & maxjsample  (for JCS_RGB)
+       *   B = (sDiff2 + G - centerjsample) & maxjsample  (same for BG_RGB)
+       */
+      R = (sDiff0 + sG - centerjsample) & maxjsample;
+      G =  sG;
+      B = (sDiff2 + sG - centerjsample) & maxjsample;
+      if (R < 0) R = 0; else if (R > maxjsample) R = maxjsample;
+      if (G < 0) G = 0; else if (G > maxjsample) G = maxjsample;
+      if (B < 0) B = 0; else if (B > maxjsample) B = maxjsample;
+
+      /* Apply neutral exposure shift to all channels equally. */
+      R += delta_samples; if (R < 0) R = 0; else if (R > maxjsample) R = maxjsample;
+      G += delta_samples; if (G < 0) G = 0; else if (G > maxjsample) G = maxjsample;
+      B += delta_samples; if (B < 0) B = 0; else if (B > maxjsample) B = maxjsample;
+
+      /* Re-apply subtract-green forward transform. */
+      sDiff0 = (R - G + centerjsample) & maxjsample;
+      sG     =  G;
+      sDiff2 = (B - G + centerjsample) & maxjsample;
+
+      /* Write back DC coefficients (rounding-safe). */
+      dc = LOSSLESS_SAMPLE_TO_DC(sDiff0, q0, centerjsample);
+      if (dc > 32767L) dc = 32767L; else if (dc < -32768L) dc = -32768L;
+      buf0[0][blk_x][0] = (JCOEF) dc;
+
+      dc = LOSSLESS_SAMPLE_TO_DC(sG, q1, centerjsample);
+      if (dc > 32767L) dc = 32767L; else if (dc < -32768L) dc = -32768L;
+      buf1[0][blk_x][0] = (JCOEF) dc;
+
+      dc = LOSSLESS_SAMPLE_TO_DC(sDiff2, q2, centerjsample);
+      if (dc > 32767L) dc = 32767L; else if (dc < -32768L) dc = -32768L;
+      buf2[0][blk_x][0] = (JCOEF) dc;
+    }
+  }
+}
+
+LOCAL(void)
+do_contrast_lossless_rgb1 (j_decompress_ptr srcinfo, j_compress_ptr dstinfo,
+			   jvirt_barray_ptr *coef_arrays,
+			   jpeg_transform_info *info)
+/* DC contrast adjustment for lossless JPEG (block_size==1) with
+ * JCT_SUBTRACT_GREEN.  Lossless blocks have no AC coefficients, so only
+ * the DC (contrast_dc) control is meaningful; contrast_low/mid/high are
+ * ignored here.
+ *
+ * Same modular-arithmetic problem as for exposure: must decode to RGB,
+ * apply the contrast scaling centred at midgrey, and re-encode.
+ */
+{
+  int precision;
+  long centerjsample, maxjsample;
+  double contrast_dc_factor;
+  long q0, q1, q2;
+  jpeg_component_info *comp1;
+  JDIMENSION blk_y, blk_x;
+
+  if (!info->contrast_adj)
+    return;
+
+  if (srcinfo->num_components < 3)
+    return;
+
+  precision = dstinfo->data_precision;
+  if (precision <= 0 || precision > 16)
+    return;
+
+  if (info->contrast_dc == 0.0)
+    return;
+
+  centerjsample = 1L << (precision - 1);
+  maxjsample    = (1L << precision) - 1L;
+
+  contrast_dc_factor = pow(2.0, info->contrast_dc);
+  if (contrast_dc_factor == 1.0)
+    return;
+
+  {
+    JQUANT_TBL *t0 = dstinfo->quant_tbl_ptrs[dstinfo->comp_info[0].quant_tbl_no];
+    JQUANT_TBL *t1 = dstinfo->quant_tbl_ptrs[dstinfo->comp_info[1].quant_tbl_no];
+    JQUANT_TBL *t2 = dstinfo->quant_tbl_ptrs[dstinfo->comp_info[2].quant_tbl_no];
+    q0 = (t0 && t0->quantval[0] > 0) ? (long)t0->quantval[0] : 1L;
+    q1 = (t1 && t1->quantval[0] > 0) ? (long)t1->quantval[0] : 1L;
+    q2 = (t2 && t2->quantval[0] > 0) ? (long)t2->quantval[0] : 1L;
+  }
+  comp1 = dstinfo->comp_info + 1;
+
+  /* Per-pixel: decode to RGB, scale contrast, re-encode. */
+  for (blk_y = 0; blk_y < comp1->height_in_blocks; blk_y++) {
+    JBLOCKARRAY buf0 = (*srcinfo->mem->access_virt_barray)
+      ((j_common_ptr) srcinfo, coef_arrays[0], blk_y, (JDIMENSION) 1, TRUE);
+    JBLOCKARRAY buf1 = (*srcinfo->mem->access_virt_barray)
+      ((j_common_ptr) srcinfo, coef_arrays[1], blk_y, (JDIMENSION) 1, TRUE);
+    JBLOCKARRAY buf2 = (*srcinfo->mem->access_virt_barray)
+      ((j_common_ptr) srcinfo, coef_arrays[2], blk_y, (JDIMENSION) 1, TRUE);
+
+    for (blk_x = 0; blk_x < comp1->width_in_blocks; blk_x++) {
+      long sDiff0 = LOSSLESS_DC_TO_SAMPLE(buf0[0][blk_x][0], q0, centerjsample);
+      long sG     = LOSSLESS_DC_TO_SAMPLE(buf1[0][blk_x][0], q1, centerjsample);
+      long sDiff2 = LOSSLESS_DC_TO_SAMPLE(buf2[0][blk_x][0], q2, centerjsample);
+      long R, G, B, dc;
+
+      /* Decode subtract-green to RGB. */
+      R = (sDiff0 + sG - centerjsample) & maxjsample;
+      G =  sG;
+      B = (sDiff2 + sG - centerjsample) & maxjsample;
+      if (R < 0) R = 0; else if (R > maxjsample) R = maxjsample;
+      if (G < 0) G = 0; else if (G > maxjsample) G = maxjsample;
+      if (B < 0) B = 0; else if (B > maxjsample) B = maxjsample;
+
+      /* Apply DC contrast scaling centred at midgrey:
+       *   channel_new = (channel - centerjsample) * factor + centerjsample
+       */
+      R = (long)((double)(R - centerjsample) * contrast_dc_factor + (double)centerjsample + 0.5);
+      G = (long)((double)(G - centerjsample) * contrast_dc_factor + (double)centerjsample + 0.5);
+      B = (long)((double)(B - centerjsample) * contrast_dc_factor + (double)centerjsample + 0.5);
+      if (R < 0) R = 0; else if (R > maxjsample) R = maxjsample;
+      if (G < 0) G = 0; else if (G > maxjsample) G = maxjsample;
+      if (B < 0) B = 0; else if (B > maxjsample) B = maxjsample;
+
+      /* Re-apply subtract-green forward transform. */
+      sDiff0 = (R - G + centerjsample) & maxjsample;
+      sG     =  G;
+      sDiff2 = (B - G + centerjsample) & maxjsample;
+
+      /* Write back. */
+      dc = LOSSLESS_SAMPLE_TO_DC(sDiff0, q0, centerjsample);
+      if (dc > 32767L) dc = 32767L; else if (dc < -32768L) dc = -32768L;
+      buf0[0][blk_x][0] = (JCOEF) dc;
+
+      dc = LOSSLESS_SAMPLE_TO_DC(sG, q1, centerjsample);
+      if (dc > 32767L) dc = 32767L; else if (dc < -32768L) dc = -32768L;
+      buf1[0][blk_x][0] = (JCOEF) dc;
+
+      dc = LOSSLESS_SAMPLE_TO_DC(sDiff2, q2, centerjsample);
+      if (dc > 32767L) dc = 32767L; else if (dc < -32768L) dc = -32768L;
+      buf2[0][blk_x][0] = (JCOEF) dc;
+    }
+  }
+}
+
 LOCAL(void)
 do_exposure_comp (j_decompress_ptr srcinfo, j_compress_ptr dstinfo,
 		  jvirt_barray_ptr *coef_arrays, jpeg_transform_info *info)
@@ -1586,6 +2054,17 @@ do_exposure_comp (j_decompress_ptr srcinfo, j_compress_ptr dstinfo,
   gain = pow(2.0, info->exposure_comp_ev);
   if (gain == 1.0)
     return;
+
+  /* Lossless JPEG with JCT_SUBTRACT_GREEN requires per-pixel RGB processing
+   * to avoid colour artefacts from 8-bit modular arithmetic in ch0/ch2.
+   * The dedicated helper handles it and we return early here. */
+  if (dstinfo->block_size == 1 &&
+      (srcinfo->jpeg_color_space == JCS_RGB ||
+       srcinfo->jpeg_color_space == JCS_BG_RGB) &&
+      srcinfo->color_transform == JCT_SUBTRACT_GREEN) {
+    do_exposure_lossless_rgb1(srcinfo, dstinfo, coef_arrays, info);
+    return;
+  }
 
   for (ci = 0; ci < dstinfo->num_components; ci++) {
     jpeg_component_info *compptr = dstinfo->comp_info + ci;
@@ -1642,6 +2121,12 @@ do_exposure_comp (j_decompress_ptr srcinfo, j_compress_ptr dstinfo,
      * so mean(samples) = DC_quant*Q0/block_size + centerjsample.
      */
     dctsize = dstinfo->block_size;
+    /* For lossless JPEG (block_size == 1), jpeg_idct_1x1 still applies the
+     * same final descale as the 8x8 IDCT (right-shift by 3 for 8-bit), so
+     * the DC coefficient formula uses DCTSIZE as the normalization factor,
+     * not 1.  See expand_color_component_sample for the same correction. */
+    if (dctsize == 1)
+      dctsize = DCTSIZE;
 
     /* Estimate a reference level for this component from the quantized DC
      * coefficients.
@@ -1772,10 +2257,13 @@ do_exposure_comp (j_decompress_ptr srcinfo, j_compress_ptr dstinfo,
              * (all pixels at maxjsample), so any residual AC energy is
              * physically invalid and would produce spurious DCT basis-function
              * patterns visible as false texture in the clipped area.
+             * Use actual block_size^2 (not the formula dctsize) so that
+             * lossless blocks (block_size == 1, one coefficient) are handled
+             * correctly without writing beyond the stored coefficient array.
              */
             {
               int k;
-              const int ncoefs = dctsize * dctsize;
+              const int ncoefs = dstinfo->block_size * dstinfo->block_size;
               for (k = 1; k < ncoefs; k++)
                 rowptr[blk_x][k] = 0;
             }
@@ -1784,7 +2272,7 @@ do_exposure_comp (j_decompress_ptr srcinfo, j_compress_ptr dstinfo,
             /* Same rationale for the shadow floor: all pixels at 0. */
             {
               int k;
-              const int ncoefs = dctsize * dctsize;
+              const int ncoefs = dstinfo->block_size * dstinfo->block_size;
               for (k = 1; k < ncoefs; k++)
                 rowptr[blk_x][k] = 0;
             }
@@ -1868,6 +2356,17 @@ do_contrast (j_decompress_ptr srcinfo, j_compress_ptr dstinfo,
       info->contrast_high == 0.0)
     return;
 
+  /* Lossless JPEG with JCT_SUBTRACT_GREEN: same modular-arithmetic issue as
+   * in do_exposure_comp.  Lossless blocks have no AC coefficients anyway, so
+   * only contrast_dc is meaningful; the helper covers it. */
+  if (dstinfo->block_size == 1 &&
+      (srcinfo->jpeg_color_space == JCS_RGB ||
+       srcinfo->jpeg_color_space == JCS_BG_RGB) &&
+      srcinfo->color_transform == JCT_SUBTRACT_GREEN) {
+    do_contrast_lossless_rgb1(srcinfo, dstinfo, coef_arrays, info);
+    return;
+  }
+
   contrast_dc_factor = pow(2.0, info->contrast_dc);
   natural_order = dstinfo->natural_order;
   if (natural_order == NULL)
@@ -1908,7 +2407,13 @@ do_contrast (j_decompress_ptr srcinfo, j_compress_ptr dstinfo,
      * upsampler and are unrelated to the coefficient domain.
      */
     dctsize = dstinfo->block_size;
-    block_coefs = dctsize * dctsize;
+    block_coefs = dctsize * dctsize;  /* actual per-block coefficient count */
+    /* For lossless JPEG (block_size == 1), jpeg_idct_1x1 still applies the
+     * same final descale as the 8x8 IDCT (right-shift by 3 for 8-bit), so
+     * the DC coefficient formula uses DCTSIZE as the normalization factor.
+     * block_coefs (set above) keeps the actual count (1) for AC loops. */
+    if (dctsize == 1)
+      dctsize = DCTSIZE;
 
     /* Compute the physical DC bounds for this component.
      * The IJG DCT normalisation gives DC_unquant = dctsize × mean_levelshifted
@@ -2044,6 +2549,510 @@ do_contrast (j_decompress_ptr srcinfo, j_compress_ptr dstinfo,
               new_val = -max_ac_coef;
 
             rowptr[blk_x][k] = (JCOEF) new_val;
+          }
+        }
+      }
+    }
+  }
+}
+
+LOCAL(long)
+requantize_to_step (long coef, long step)
+/* Round quantized coefficient to nearest multiple of step. */
+{
+  long q;
+
+  if (step <= 1L)
+    return coef;
+
+  if (coef >= 0L)
+    q = (coef + step / 2L) / step;
+  else
+    q = (coef - step / 2L) / step;
+
+  return q * step;
+}
+
+LOCAL(unsigned int)
+grain_hash_u32 (JDIMENSION blk_x, JDIMENSION blk_y, int ci, int z)
+/* Deterministic 32-bit hash for pseudo grain generation. */
+{
+  unsigned int h = 2166136261u;
+
+  h = (h ^ (unsigned int) blk_x) * 16777619u;
+  h = (h ^ (unsigned int) blk_y) * 16777619u;
+  h = (h ^ (unsigned int) ci) * 16777619u;
+  h = (h ^ (unsigned int) z) * 16777619u;
+
+  /* final mix */
+  h ^= h >> 16;
+  h *= 2246822519u;
+  h ^= h >> 13;
+  h *= 3266489917u;
+  h ^= h >> 16;
+  return h;
+}
+
+LOCAL(void)
+do_art_effects (j_decompress_ptr srcinfo, j_compress_ptr dstinfo,
+		jvirt_barray_ptr *coef_arrays, jpeg_transform_info *info)
+/* Apply optional artistic AC-domain effects:
+ * - Requant look: frequency-dependent coarse rounding of AC coefficients.
+ * - Sparsify: zero small AC coefficients.
+ * - Band-stop: attenuate coefficients inside normalized zigzag band [low..high].
+ * - Band-pass: attenuate coefficients outside normalized zigzag band [low..high].
+ * - Filmgrain: add deterministic pseudo noise in AC (mid/high biased).
+ * - DCT Focus: frequency-weighted multiplicative shaping in AC.
+ * - DCT Mosaic: macro pixelation in DCT domain (shared DC per NxN group +
+ *   controllable AC blend-back).
+ *
+ * These effects are intentionally stylizing and are not mathematically
+ * lossless to the source image, but they avoid full decode/re-encode.
+ */
+{
+  int ci;
+  int precision;
+  long max_ac_coef;
+  const int *natural_order;
+  boolean do_any;
+
+  /*
+   * Fast exit: skip all work if no art-effect parameter is active.
+   * Note that DCT Mosaic is keyed by size (macro grouping), not by amount.
+   */
+  do_any = ((info->requant_look && info->requant_strength > 0.0) ||
+	    (info->sparsify && info->sparsify_threshold > 0L) ||
+	    (info->band_stop && info->band_stop_atten > 0.0) ||
+      (info->band_pass && info->band_pass_atten > 0.0) ||
+      (info->filmgrain && info->filmgrain_amount > 0.0) ||
+      (info->dct_focus_amount > 0.0) ||
+      (info->dct_mosaic_size > 0.0));
+
+  if (!do_any)
+    return;
+
+  precision = dstinfo->data_precision;
+  if (precision <= 0 || precision > 16)
+    return;
+
+  /*
+   * AC magnitude guard for entropy coding.  Keep transformed AC coefficients
+   * within a safe category range (mirrors contrast/exposure safeguards).
+   */
+  max_ac_coef = (1L << (precision + 2)) - 1L;
+  if (max_ac_coef > 32767L)
+    max_ac_coef = 32767L;
+
+  natural_order = dstinfo->natural_order;
+  if (natural_order == NULL)
+    natural_order = jpeg_natural_order;
+
+  for (ci = 0; ci < dstinfo->num_components; ci++) {
+    jpeg_component_info *compptr = dstinfo->comp_info + ci;
+    int dctsize;
+    int block_coefs;
+    int ac_count;
+    boolean apply_comp;
+    boolean ycc_family;
+    boolean detail_on_comp;
+    double band_comp_weight;
+    JDIMENSION blk_y;
+
+    /*
+     * Component policy:
+     * - YCC family: process all components for richer color stylization.
+     *   Luma (Y) gets a slightly reduced band weight to avoid looking like a
+     *   plain contrast adjustment.
+     * - RGB with subtract-green transform (RGB1): run detail operations on the
+     *   base G component to reduce hue drift.
+     * - Other spaces: process all components uniformly.
+     */
+    ycc_family = (srcinfo->jpeg_color_space == JCS_YCbCr ||
+		  srcinfo->jpeg_color_space == JCS_BG_YCC ||
+		  srcinfo->jpeg_color_space == JCS_YCCK);
+
+    /*
+     * Band ops: allow Y + chroma in YCC-family to get a stronger, more
+     * colorful look. Keep Y weighted lower so the look stays distinct from
+     * contrast-like luminance shaping.
+     */
+    if (ycc_family) {
+      apply_comp = TRUE;
+      band_comp_weight = (ci == 0) ? 0.65 : 1.00;
+      detail_on_comp = (ci == 0);
+    } else if ((srcinfo->jpeg_color_space == JCS_RGB ||
+		srcinfo->jpeg_color_space == JCS_BG_RGB) &&
+	       srcinfo->color_transform == JCT_SUBTRACT_GREEN) {
+      apply_comp = (ci == 1);
+      band_comp_weight = 1.0;
+      detail_on_comp = apply_comp;
+    } else {
+      apply_comp = TRUE;
+      band_comp_weight = 1.0;
+      detail_on_comp = TRUE;
+    }
+
+    if (!apply_comp)
+      continue;
+
+    dctsize = dstinfo->block_size;
+    block_coefs = dctsize * dctsize;
+    if (block_coefs <= 1)
+      continue;
+    ac_count = block_coefs - 1;
+
+    /*
+     * Pass 1: operate on each block's AC coefficients (z = 1..ac_count).
+     * Processing order inside the loop is intentional:
+     *   1) band attenuation (coarse shaping),
+     *   2) sparsify/requant (structure simplification),
+     *   3) filmgrain/focus (detail synthesis + spectral emphasis),
+     *   4) final clamp.
+     */
+    for (blk_y = 0; blk_y < compptr->height_in_blocks; blk_y++) {
+      JBLOCKARRAY buffer = (*srcinfo->mem->access_virt_barray)
+	((j_common_ptr) srcinfo, coef_arrays[ci], blk_y, (JDIMENSION) 1, TRUE);
+      JBLOCKROW rowptr = buffer[0];
+      JDIMENSION blk_x;
+
+      for (blk_x = 0; blk_x < compptr->width_in_blocks; blk_x++) {
+	int z;
+	for (z = 1; z <= ac_count; z++) {
+	  int k = natural_order[z];
+	  long v = (long) rowptr[blk_x][k];
+      double t = (ac_count > 1) ? (double) (z - 1) / (double) (ac_count - 1) : 0.0;
+
+      /*
+       * t is normalized zigzag frequency position:
+       *   t=0   -> lowest AC,
+       *   t=1   -> highest AC.
+       * All frequency-dependent effects use t as a common domain.
+       */
+
+      if (info->band_stop && info->band_stop_atten > 0.0) {
+        if (t >= info->band_stop_low && t <= info->band_stop_high) {
+          double atten;
+          double atten_eff;
+          double gain;
+          double scaled;
+
+          atten = info->band_stop_atten;
+          if (atten < 0.0)
+            atten = 0.0;
+          if (atten > 1.0)
+            atten = 1.0;
+          atten_eff = atten * (0.80 + 0.20 * atten);
+          atten_eff *= band_comp_weight;
+          if (atten_eff > 1.0)
+            atten_eff = 1.0;
+          gain = 1.0 - atten_eff;
+          scaled = gain * (double) v;
+          if (scaled >= 0.0)
+            v = (long) (scaled + 0.5);
+          else
+            v = (long) (scaled - 0.5);
+        }
+      }
+
+      if (info->band_pass && info->band_pass_atten > 0.0) {
+        if (!(t >= info->band_pass_low && t <= info->band_pass_high)) {
+          double atten;
+          double atten_eff;
+          double gain;
+          double scaled;
+
+          atten = info->band_pass_atten;
+          if (atten < 0.0)
+            atten = 0.0;
+          if (atten > 1.0)
+            atten = 1.0;
+          atten_eff = atten * (0.80 + 0.20 * atten);
+          atten_eff *= band_comp_weight;
+          if (atten_eff > 1.0)
+            atten_eff = 1.0;
+          gain = 1.0 - atten_eff;
+          scaled = gain * (double) v;
+          if (scaled >= 0.0)
+            v = (long) (scaled + 0.5);
+          else
+            v = (long) (scaled - 0.5);
+        }
+      }
+
+      if (detail_on_comp && info->sparsify && info->sparsify_threshold > 0L) {
+        if (v <= info->sparsify_threshold && v >= -info->sparsify_threshold)
+          v = 0L;
+      }
+
+      if (detail_on_comp && info->requant_look && info->requant_strength > 0.0) {
+        long step;
+
+        /* Stronger requantization for higher frequencies gives a natural
+         * compressed/retro look.
+         */
+        step = 1L + (long) (info->requant_strength * (1.5 + 5.0 * t) + 0.5);
+        v = requantize_to_step(v, step);
+      }
+
+      if (detail_on_comp && info->filmgrain && info->filmgrain_amount > 0.0) {
+        double freq_weight;
+        double amp;
+        double amount_eff;
+        unsigned int h;
+        double n;
+        long delta;
+
+        /* Bias grain to mid/high frequencies to mimic film-like texture and
+         * avoid excessive low-frequency blotches.
+         */
+        if (t <= 0.2)
+          freq_weight = 0.0;
+        else
+          freq_weight = (t - 0.2) / 0.8;
+
+        /* Gentle low-end response, while preserving max impact at higher
+         * slider values (UI max is 25).
+         */
+        amount_eff = (info->filmgrain_amount * info->filmgrain_amount) / 25.0;
+        amp = amount_eff * (0.25 + 0.75 * freq_weight);
+
+        h = grain_hash_u32(blk_x, blk_y, ci, z);
+        n = ((double) (h & 0xFFFFu) / 32767.5) - 1.0; /* approx [-1, 1] */
+
+        if (n >= 0.0)
+          delta = (long) (amp * n + 0.5);
+        else
+          delta = (long) (amp * n - 0.5);
+
+        v += delta;
+      }
+
+      if (info->dct_focus_amount > 0.0) {
+        double amount;
+        double bias;
+        double center;
+        double sigma;
+        double d;
+        double shape;
+        double gain;
+        double scaled;
+
+        /*
+         * DCT Focus uses a Gaussian-like spectral emphasis profile.
+         * - center is shifted by bias: negative -> low frequencies,
+         *   positive -> high frequencies.
+         * - sigma narrows slightly at stronger |bias| for a tighter focus.
+         * - gain maps shape to a bounded multiplicative range.
+         */
+        amount = info->dct_focus_amount;
+        if (amount < 0.0)
+          amount = 0.0;
+        if (amount > 1.0)
+          amount = 1.0;
+
+        bias = info->dct_focus_bias;
+        if (bias < -1.0)
+          bias = -1.0;
+        if (bias > 1.0)
+          bias = 1.0;
+
+        center = 0.5 + 0.35 * bias;
+        sigma = 0.22 - 0.08 * fabs(bias);
+        if (sigma < 0.12)
+          sigma = 0.12;
+
+        d = (t - center) / sigma;
+        shape = exp(-0.5 * d * d);
+
+        gain = 1.0 + amount * (2.2 * shape - 0.65);
+        if (gain < 0.15)
+          gain = 0.15;
+        if (gain > 3.0)
+          gain = 3.0;
+
+        /* Apply focus gain in coefficient domain with symmetric rounding. */
+        scaled = gain * (double) v;
+        if (scaled >= 0.0)
+          v = (long) (scaled + 0.5);
+        else
+          v = (long) (scaled - 0.5);
+      }
+
+      if (v > max_ac_coef)
+        v = max_ac_coef;
+      else if (v < -max_ac_coef)
+        v = -max_ac_coef;
+
+      rowptr[blk_x][k] = (JCOEF) v;
+      }
+      }
+    }
+  }
+
+  /*
+   * Pass 2 (separate main loop): DCT Mosaic macro operation only.
+   * Kept separate from the regular 8x8 effect loop above for clarity and
+   * to guarantee macro-area behavior independent of band/requant/filmgrain.
+   *
+  * Effect model:
+  *  - Group blocks into NxN macro tiles.
+  *  - Per tile, set all block DCs to one shared target value.
+  *  - Per block, blend original AC back with factor alpha in [0..0.9].
+  *    alpha = 0.9 * dct_mosaic_amount.
+  *  - dct_mosaic_amount=0 keeps fully flattened AC; 1 restores ~90% AC.
+   */
+  if (info->dct_mosaic_size > 0.0) {
+    for (ci = 0; ci < dstinfo->num_components; ci++) {
+      jpeg_component_info *compptr = dstinfo->comp_info + ci;
+      int dctsize = dstinfo->block_size;
+      int block_coefs = dctsize * dctsize;
+      int ac_count = block_coefs - 1;
+      int tile_period;
+      int tblno;
+      long max_valid_dc;
+      long min_valid_dc;
+      JDIMENSION blk_y2;
+      JQUANT_TBL *qtbl;
+      UINT16 q0;
+      long maxjsample;
+      long centerjsample;
+
+      if (dctsize < 2 || block_coefs <= 1)
+        continue;
+
+      tile_period = (int) (info->dct_mosaic_size + 0.5);
+      if (tile_period < 0)
+        tile_period = 0;
+      if (tile_period > 32)
+        tile_period = 32;
+      if (tile_period == 0)
+        continue;
+
+      tblno = compptr->quant_tbl_no;
+      if (tblno < 0 || tblno >= NUM_QUANT_TBLS)
+        continue;
+
+      qtbl = dstinfo->quant_tbl_ptrs[tblno];
+      if (qtbl == NULL)
+        continue;
+      q0 = qtbl->quantval[0];
+      if (q0 == 0)
+        continue;
+
+      maxjsample = (1L << precision) - 1L;
+      centerjsample = 1L << (precision - 1);
+      max_valid_dc = (long) (((double) (maxjsample - centerjsample) * dctsize) / q0 + 0.5);
+      min_valid_dc = (long) ((-(double) centerjsample * dctsize) / q0 - 0.5);
+      if (max_valid_dc > 32767L)
+        max_valid_dc = 32767L;
+      if (min_valid_dc < -32768L)
+        min_valid_dc = -32768L;
+
+      for (blk_y2 = 0; blk_y2 < compptr->height_in_blocks; blk_y2 += (JDIMENSION) tile_period) {
+        JDIMENSION blk_y_end = blk_y2 + (JDIMENSION) tile_period;
+        JDIMENSION blk_x2;
+
+        if (blk_y_end > compptr->height_in_blocks)
+          blk_y_end = compptr->height_in_blocks;
+
+        for (blk_x2 = 0; blk_x2 < compptr->width_in_blocks; blk_x2 += (JDIMENSION) tile_period) {
+          JDIMENSION blk_x_end = blk_x2 + (JDIMENSION) tile_period;
+          JDIMENSION gy;
+          long dc_sum = 0L;
+          long dc_count = 0L;
+          long target_dc;
+          double ac_blend;
+
+          if (blk_x_end > compptr->width_in_blocks)
+            blk_x_end = compptr->width_in_blocks;
+
+          /* Aggregate tile DC to one representative luminance/chroma level. */
+          for (gy = blk_y2; gy < blk_y_end; gy++) {
+            JBLOCKARRAY buffer = (*srcinfo->mem->access_virt_barray)
+              ((j_common_ptr) srcinfo, coef_arrays[ci], gy, (JDIMENSION) 1, TRUE);
+            JBLOCKROW rowptr = buffer[0];
+            JDIMENSION gx;
+
+            for (gx = blk_x2; gx < blk_x_end; gx++) {
+              dc_sum += (long) rowptr[gx][0];
+              dc_count++;
+            }
+          }
+
+          if (dc_count <= 0L)
+            continue;
+
+          if (dc_sum >= 0L)
+            target_dc = (dc_sum + dc_count / 2L) / dc_count;
+          else
+            target_dc = (dc_sum - dc_count / 2L) / dc_count;
+
+          /* Mosaic amount controls AC restoration; intentionally capped at 0.9. */
+          ac_blend = info->dct_mosaic_amount;
+          if (ac_blend < 0.0)
+            ac_blend = 0.0;
+          if (ac_blend > 1.0)
+            ac_blend = 1.0;
+          ac_blend *= 0.9;
+
+          if (target_dc > max_valid_dc)
+            target_dc = max_valid_dc;
+          else if (target_dc < min_valid_dc)
+            target_dc = min_valid_dc;
+
+          for (gy = blk_y2; gy < blk_y_end; gy++) {
+            JBLOCKARRAY buffer = (*srcinfo->mem->access_virt_barray)
+              ((j_common_ptr) srcinfo, coef_arrays[ci], gy, (JDIMENSION) 1, TRUE);
+            JBLOCKROW rowptr = buffer[0];
+            JDIMENSION gx;
+
+            for (gx = blk_x2; gx < blk_x_end; gx++) {
+              int z;
+
+              /* Flatten tile base tone/color by writing shared DC. */
+              rowptr[gx][0] = (JCOEF) target_dc;
+              for (z = 1; z < block_coefs; z++) {
+                int k = natural_order[z];
+                long orig_ac = (long) rowptr[gx][k];
+                long v;
+                double t;
+                double freq_weight;
+                double blend_eff;
+                double scaled;
+
+                if (ac_blend <= 0.0) {
+                  v = 0L;
+                } else {
+                  t = (ac_count > 1) ? (double) (z - 1) / (double) (ac_count - 1) : 0.0;
+
+                  /* Frequency-weighted AC blend:
+                   * keep low frequencies subdued to reduce visible tile
+                   * boundaries, while allowing stronger mid/high detail.
+                   */
+                  if (t < 0.25)
+                    freq_weight = 0.15 + 0.45 * (t / 0.25);
+                  else
+                    freq_weight = 0.60 + 0.40 * ((t - 0.25) / 0.75);
+
+                  /* Slight boost keeps mid/high restoration visually noticeable. */
+                  blend_eff = ac_blend * freq_weight * 1.85;
+                  if (blend_eff > 1.0)
+                    blend_eff = 1.0;
+                  scaled = (double) orig_ac * blend_eff;
+                  if (scaled >= 0.0)
+                    v = (long) (scaled + 0.5);
+                  else
+                    v = (long) (scaled - 0.5);
+                }
+
+                if (v > max_ac_coef)
+                  v = max_ac_coef;
+                else if (v < -max_ac_coef)
+                  v = -max_ac_coef;
+
+                rowptr[gx][k] = (JCOEF) v;
+              }
+            }
           }
         }
       }
@@ -2193,6 +3202,7 @@ jtransform_request_workspace (j_decompress_ptr srcinfo,
   jvirt_barray_ptr *coef_arrays;
   boolean need_workspace, transpose_it;
   jpeg_component_info *compptr;
+  JDIMENSION base_output_width, base_output_height;
   JDIMENSION xoffset, yoffset, dtemp;
   JDIMENSION width_in_iMCUs, height_in_iMCUs;
   JDIMENSION width_in_blocks, height_in_blocks;
@@ -2211,13 +3221,6 @@ jtransform_request_workspace (j_decompress_ptr srcinfo,
 
   /* Compute output image dimensions and related values. */
   jpeg_core_output_dimensions(srcinfo);
-
-  /* Tonal adjustments are currently not supported for lossless JPEG
-   * (block_size == 1). Signal caller by returning FALSE.
-   */
-  if (srcinfo->block_size == 1 &&
-      (info->exposure_comp || info->contrast_adj))
-    return FALSE;
 
   /* Return right away if -perfect is given and transformation is not perfect.
    */
@@ -2238,6 +3241,9 @@ jtransform_request_workspace (j_decompress_ptr srcinfo,
 	return FALSE;
     }
   }
+
+  base_output_width = info->output_width;
+  base_output_height = info->output_height;
 
   /* If there is only one output component, force the iMCU size to be 1;
    * else use the source iMCU size.  (This allows us to do the right thing
@@ -2274,6 +3280,9 @@ jtransform_request_workspace (j_decompress_ptr srcinfo,
 	srcinfo->max_v_samp_factor * srcinfo->min_DCT_v_scaled_size;
     }
   }
+
+  if (info->expand_color && !info->crop)
+    ERREXIT(srcinfo, JERR_BAD_CROP_SPEC);
 
   /* If cropping has been requested, compute the crop area's position and
    * dimensions, ensuring that its upper left corner falls at an iMCU boundary.
@@ -2322,6 +3331,20 @@ jtransform_request_workspace (j_decompress_ptr srcinfo,
 	  ERREXIT(srcinfo, JERR_BAD_CROP_SPEC);
       }
     }
+
+    if (info->expand_color) {
+      if (info->transform != JXFORM_NONE ||
+    info->crop_xoffset_set == JCROP_NEG ||
+    info->crop_yoffset_set == JCROP_NEG ||
+    info->crop_xoffset != 0 ||
+    info->crop_yoffset != 0 ||
+    info->crop_width < base_output_width ||
+    info->crop_height < base_output_height ||
+    (info->crop_width == base_output_width &&
+     info->crop_height == base_output_height))
+  ERREXIT(srcinfo, JERR_BAD_CROP_SPEC);
+    }
+
     /* Convert negative crop offsets into regular offsets */
     if (info->crop_xoffset_set != JCROP_NEG)
       xoffset = info->crop_xoffset;
@@ -2578,7 +3601,7 @@ transpose_critical_parameters (j_compress_ptr dstinfo)
  * We try to adjust the Tags ExifImageWidth and ExifImageHeight if possible.
  */
 
-LOCAL(void)
+GLOBAL(void)
 adjust_exif_parameters (JOCTET FAR * data, unsigned int length,
 			JDIMENSION new_width, JDIMENSION new_height)
 {
@@ -2871,7 +3894,7 @@ jtransform_execute_transform (j_decompress_ptr srcinfo,
       else
 	do_crop_ext_zero(srcinfo, dstinfo,
 			 info->x_crop_offset, info->y_crop_offset,
-			 src_coef_arrays, dst_coef_arrays);
+       src_coef_arrays, dst_coef_arrays, info);
     } else if (info->x_crop_offset != 0 || info->y_crop_offset != 0)
       do_crop(srcinfo, dstinfo, info->x_crop_offset, info->y_crop_offset,
 	      src_coef_arrays, dst_coef_arrays);
@@ -2942,14 +3965,16 @@ jtransform_execute_transform (j_decompress_ptr srcinfo,
     break;
   }
 
-  /* Apply optional tonal adjustments as a post-step.
-   * Both compose cleanly with rotate/flip/crop because they operate per-block.
-   * do_exposure_comp shifts DC only; do_contrast scales all coefficients.
+  /* Apply optional DCT-domain post effects.
+   * All compose cleanly with rotate/flip/crop because they operate per-block.
+   * do_exposure_comp shifts DC only; do_contrast applies frequency-weighted
+   * contrast; do_art_effects applies stylizing AC-domain effects.
    */
   out_coef_arrays = (info->workspace_coef_arrays != NULL) ?
     info->workspace_coef_arrays : src_coef_arrays;
   do_exposure_comp(srcinfo, dstinfo, out_coef_arrays, info);
   do_contrast(srcinfo, dstinfo, out_coef_arrays, info);
+  do_art_effects(srcinfo, dstinfo, out_coef_arrays, info);
 }
 
 /* jtransform_perfect_transform

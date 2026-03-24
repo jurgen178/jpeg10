@@ -648,6 +648,31 @@ images only the luminance component is scaled; for RGB/BG_RGB images with a
 subtract-green transform only the green component is scaled; otherwise all
 components are scaled.
 
+	-requant-look S		Apply frequency-dependent AC requantization for a
+				stylized retro/compressed look (S >= 0).
+
+	-sparsify T		Zero out small AC coefficients with abs(AC) <= T,
+				where T is a non-negative integer.
+
+	-band-stop L H A	Attenuate AC coefficients inside normalized zigzag
+				band [L..H] by amount A (all in [0..1], L <= H).
+
+	-band-pass L H A	Attenuate AC coefficients outside normalized zigzag
+				band [L..H] by amount A (all in [0..1], L <= H).
+
+	-filmgrain G		Add deterministic pseudo film grain in the AC domain
+				with strength G >= 0.
+
+	-dct-mosaic M S	Apply DCT Mosaic in the DCT domain with AC blend M
+				(in [0..1], max about 90%) and group size S (in [0..32], 0=off).
+This creates SxS macro tiles with shared DC and per-block AC blend-back,
+so M=0 gives flat mosaic tiles while higher M mixes original detail back in.
+
+	-dct-focus A B	Apply DCT Focus in the DCT domain with amount A
+				(in [0..1]) and bias B (in [-1..1], low..high focus).
+This multiplicatively shapes AC coefficients by a smooth frequency profile to
+emphasize selected structure bands.
+
 	-grayscale	Force grayscale output.
 This option discards the chrominance channels if the input image is YCbCr
 (ie, a standard color JPEG), resulting in a grayscale JPEG file.  The
