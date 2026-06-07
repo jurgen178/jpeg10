@@ -5,3 +5,4 @@
 /.vs
 /Debug/x64
 /Release/x64
+*.vcxproj.user
