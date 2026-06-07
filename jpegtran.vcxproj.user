@@ -3,6 +3,7 @@
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <LocalDebuggerCommandArguments>-exposure-comp 1 C:\Projects\cPicture\JpegLib\jpeg10-exposure-comp\P0000473.JPG C:\Projects\cPicture\JpegLib\jpeg10-exposure-comp\P0000473-exp.JPG</LocalDebuggerCommandArguments>
     <DebuggerFlavor>WindowsLocalDebugger</DebuggerFlavor>
+    <LocalDebuggerCommandArgumentsHistory>-exposure-comp 1 C:\Projects\cPicture\JpegLib\jpeg10-exposure-comp\P0000473.JPG C:\Projects\cPicture\JpegLib\jpeg10-exposure-comp\P0000473-exp.JPG|</LocalDebuggerCommandArgumentsHistory>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <LocalDebuggerCommandArguments>-copy all -exposure-comp 1 C:\Projects\cPicture\JpegLib\jpeg10-exposure-comp\P0000473.JPG C:\Projects\cPicture\JpegLib\jpeg10-exposure-comp\P0000473-exp.JPG</LocalDebuggerCommandArguments>

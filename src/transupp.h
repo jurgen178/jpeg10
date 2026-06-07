@@ -146,6 +146,10 @@ typedef struct {
   boolean trim;			/* if TRUE, trim partial MCUs as needed */
   boolean force_grayscale;	/* if TRUE, convert color image to grayscale */
   boolean crop;			/* if TRUE, crop or wipe source image, or drop */
+     boolean expand_color;		/* if TRUE, fill expanded area with chosen color */
+     int expand_color_r;		/* color R component [0..255] */
+     int expand_color_g;		/* color G component [0..255] */
+     int expand_color_b;		/* color B component [0..255] */
 
   /* Tonal adjustment options: set by caller */
      boolean exposure_comp;	/* if TRUE, adjust exposure via DC shift */
@@ -156,6 +160,26 @@ typedef struct {
      double  contrast_low;		/* Low-frequency AC control value in stops */
      double  contrast_mid;		/* Mid-frequency AC control value in stops */
      double  contrast_high;		/* High-frequency AC control value in stops */
+
+     /* Optional artistic DCT-domain effects: set by caller */
+     boolean requant_look;		/* if TRUE, requantize AC coefficients */
+     double  requant_strength;	/* >= 0, larger = stronger coarse/retro look */
+     boolean sparsify;		/* if TRUE, zero small AC coefficients */
+     long    sparsify_threshold;	/* abs(AC) <= threshold => 0 */
+     boolean band_stop;		/* if TRUE, attenuate AC inside a band */
+     double  band_stop_low;		/* band lower edge in normalized zigzag freq [0..1] */
+     double  band_stop_high;	/* band upper edge in normalized zigzag freq [0..1] */
+     double  band_stop_atten;	/* attenuation amount [0..1], 1 = full notch */
+     boolean band_pass;		/* if TRUE, attenuate AC outside a band */
+     double  band_pass_low;		/* passband lower edge in normalized zigzag freq [0..1] */
+     double  band_pass_high;	/* passband upper edge in normalized zigzag freq [0..1] */
+     double  band_pass_atten;	/* attenuation amount [0..1] outside band */
+     boolean filmgrain;		/* if TRUE, add deterministic pseudo film grain in AC */
+     double  filmgrain_amount;	/* grain strength in quantized AC units (>= 0) */
+    double  dct_mosaic_amount;	/* DCT Mosaic AC blend amount [0..1] */
+    double  dct_mosaic_size;	/* DCT Mosaic group size [0..32], 0 = off */
+    double  dct_focus_amount;	/* DCT focus strength [0..1] */
+    double  dct_focus_bias;	/* DCT focus bias [-1..1], low..high */
 
   /* Crop parameters: application need not set these unless crop is TRUE.
    * These can be filled in by jtransform_parse_crop_spec().
