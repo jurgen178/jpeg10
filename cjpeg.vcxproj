@@ -27,24 +27,24 @@
     </ProjectConfiguration>
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="cdjpeg.h" />
-    <ClInclude Include="cderror.h" />
-    <ClInclude Include="jconfig.h" />
-    <ClInclude Include="jerror.h" />
-    <ClInclude Include="jinclude.h" />
-    <ClInclude Include="jmorecfg.h" />
-    <ClInclude Include="jpeglib.h" />
-    <ClInclude Include="jversion.h" />
+    <ClInclude Include="src\cdjpeg.h" />
+    <ClInclude Include="src\cderror.h" />
+    <ClInclude Include="src\jconfig.h" />
+    <ClInclude Include="src\jerror.h" />
+    <ClInclude Include="src\jinclude.h" />
+    <ClInclude Include="src\jmorecfg.h" />
+    <ClInclude Include="src\jpeglib.h" />
+    <ClInclude Include="src\jversion.h" />
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="cjpeg.c" />
-    <ClCompile Include="cdjpeg.c" />
-    <ClCompile Include="rdswitch.c" />
-    <ClCompile Include="rdppm.c" />
-    <ClCompile Include="rdgif.c" />
-    <ClCompile Include="rdtarga.c" />
-    <ClCompile Include="rdrle.c" />
-    <ClCompile Include="rdbmp.c" />
+    <ClCompile Include="src\cjpeg.c" />
+    <ClCompile Include="src\cdjpeg.c" />
+    <ClCompile Include="src\rdswitch.c" />
+    <ClCompile Include="src\rdppm.c" />
+    <ClCompile Include="src\rdgif.c" />
+    <ClCompile Include="src\rdtarga.c" />
+    <ClCompile Include="src\rdrle.c" />
+    <ClCompile Include="src\rdbmp.c" />
   </ItemGroup>
   <PropertyGroup Label="Globals">
     <ProjectGuid>{4BD4F1A8-B519-4E96-9667-3B5A5C1F7D12}</ProjectGuid>
@@ -57,19 +57,19 @@
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'" Label="Configuration">
     <ConfigurationType>Application</ConfigurationType>
     <UseDebugLibraries>true</UseDebugLibraries>
-    <PlatformToolset>v143</PlatformToolset>
+    <PlatformToolset>v145</PlatformToolset>
     <CharacterSet>Unicode</CharacterSet>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
     <ConfigurationType>Application</ConfigurationType>
     <UseDebugLibraries>true</UseDebugLibraries>
-    <PlatformToolset>v143</PlatformToolset>
+    <PlatformToolset>v145</PlatformToolset>
     <CharacterSet>Unicode</CharacterSet>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|ARM64'" Label="Configuration">
     <ConfigurationType>Application</ConfigurationType>
     <UseDebugLibraries>true</UseDebugLibraries>
-    <PlatformToolset>v143</PlatformToolset>
+    <PlatformToolset>v145</PlatformToolset>
     <CharacterSet>Unicode</CharacterSet>
   </PropertyGroup>
   <!-- Release Configurations -->
@@ -77,21 +77,21 @@
     <ConfigurationType>Application</ConfigurationType>
     <UseDebugLibraries>false</UseDebugLibraries>
     <WholeProgramOptimization>true</WholeProgramOptimization>
-    <PlatformToolset>v143</PlatformToolset>
+    <PlatformToolset>v145</PlatformToolset>
     <CharacterSet>Unicode</CharacterSet>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
     <ConfigurationType>Application</ConfigurationType>
     <UseDebugLibraries>false</UseDebugLibraries>
     <WholeProgramOptimization>true</WholeProgramOptimization>
-    <PlatformToolset>v143</PlatformToolset>
+    <PlatformToolset>v145</PlatformToolset>
     <CharacterSet>Unicode</CharacterSet>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|ARM64'" Label="Configuration">
     <ConfigurationType>Application</ConfigurationType>
     <UseDebugLibraries>false</UseDebugLibraries>
     <WholeProgramOptimization>true</WholeProgramOptimization>
-    <PlatformToolset>v143</PlatformToolset>
+    <PlatformToolset>v145</PlatformToolset>
     <CharacterSet>Unicode</CharacterSet>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
